@@ -1,0 +1,36 @@
+project:
+  type: default
+  render:
+    - "*/*.qmd"
+
+# quarto does not reliably apply a project-wide engine (quarto-cli#3157), so every .qmd
+# also sets `engine: julia` in its own front matter.
+engine: julia
+
+julia:
+  project: "."
+  # several threads, so AMIS evaluates its batches in parallel as users would run it
+  exeflags: ["--threads=auto"]
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    embed-resources: true
+  pdf:
+    documentclass: scrartcl
+    papersize: a4
+    mainfont: "STIX Two Text"
+    sansfont: "STIX Two Text"
+    monofont: "Menlo"
+    mathfont: "STIX Two Math"
+    pdf-engine: lualatex
+    toc: true
+    colorlinks: true
+    linkcolor: "blue"
+    urlcolor: "blue"
+  gfm:
+    toc: true
+
+execute:
+  freeze: auto

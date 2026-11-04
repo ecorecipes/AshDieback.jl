@@ -1,0 +1,90 @@
+---
+title: "Inference"
+author: "Simon Frost"
+engine: julia
+---
+
+## Overview
+
+The paper estimates the parameters by Bayesian inference under uniform priors, with two
+samplers: a component-wise Metropolis–Hastings algorithm and adaptive multiple importance
+sampling (AMIS). This vignette builds the posterior of the paper's reduced model and runs
+short versions of both, then shows the Turing.jl interface. A likelihood takes about a
+second, so the runs here are far too short for real estimates; they show the workflow.
+
+## Setup
+
+```{julia}
+using AshDieback
+using AbstractMCMC
+using MCMCChains
+using LinearAlgebra
+using LogDensityProblems
+using Random
+using Plots
+
+data = load_peoc_data()
+θ0 = AshDiebackParameters([1000.0, 0.0, 24.0, 0.0, 18.0, 90.0, 21.50001, 1.0, 0.0085, 0.05])
+prob = AshDiebackProblem(data, θ0)
+```
+
+## The posterior
+
+The reduced model (eq. 13 of the paper) has no Allee effect and no rainfall effect, fixes
+γ and C_pers, and estimates β₀, D, S, C_init and κ:
+
+```{julia}
+post = AshDiebackPosterior(prob, reduced_model_prior_ranges())
+free_parameters(post)
+```
+
+`post` is a LogDensityProblems.jl log density over the free parameters:
+
+```{julia}
+x0 = θ0[post.free]
+LogDensityProblems.logdensity(post, x0)
+```
+
+## Metropolis–Hastings
+
+PEOC's sampler updates one parameter per iteration with a gamma proposal centred on its
+current value (shape 200, so a standard deviation of 7 % of the value):
+
+```{julia}
+spl = ComponentwiseGammaMH(post)
+chain = sample(Xoshiro(1), post, spl, 200; initial_params = x0, chain_type = Chains,
+               progress = false)
+```
+
+Trace plots of three of the parameters (MCMCChains' default plot adds density plots, which
+need StatsPlots.jl):
+
+```{julia}
+plot(chain[:, [:beta_0, :D, :S_sat], 1]; seriestype = :traceplot, size = (800, 600))
+```
+
+## AMIS
+
+AMIS draws batches from a Gaussian proposal, weights all draws so far against the mixture
+of the proposals used, and moves the proposal to the weighted mean and covariance. The
+paper's initial proposal for the T28 index (its Table 2) has these variances:
+
+```{julia}
+Σ0 = Diagonal([3.0, 0.4, 1.0, 1e-8, 1.5e-5])
+res = amis(Xoshiro(2), post, x0, Matrix(Σ0); iterations = 3, samples = 40)
+res.means[end]
+```
+
+With several threads (`julia --threads=auto`) the likelihoods of a batch are evaluated in
+parallel.
+
+## Turing
+
+`turing_model(post)` gives the same posterior as a Turing.jl model, so Turing's samplers
+and tools apply. The likelihood has no useful gradient, so use a gradient-free sampler:
+
+```{julia}
+using Turing
+model = turing_model(post)
+Turing.DynamicPPL.logjoint(model, (; θ = x0)) ≈ LogDensityProblems.logdensity(post, x0)
+```
