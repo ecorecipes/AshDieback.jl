@@ -6,8 +6,6 @@ makedocs(;
          authors = "Simon Frost",
          sitename = "AshDieback.jl",
          checkdocs = :exports,
-         # no GitHub repository yet, so no source or edit links
-         remotes = nothing,
          format = Documenter.HTML(;
                                   prettyurls = get(ENV, "CI", "false") == "true",
                                   canonical = "https://ecorecipes.github.io/AshDieback.jl"),

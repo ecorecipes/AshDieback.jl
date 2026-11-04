@@ -57,8 +57,7 @@ or kill it (`quarto call engine julia status` is read-only). Quarto waits only a
 for a new server to start, so on a loaded machine the first render fails with "No
 transport file was found"; render again once `status` shows the server running.
 MCMCChains' default `plot(chain)` needs StatsPlots.jl, which the vignettes do not load: use
-`seriestype = :traceplot`. `docs/make.jl` sets `remotes = nothing` until the package has a
-GitHub repository.
+`seriestype = :traceplot`.
 
 One likelihood takes about 1.3–1.5 s (6000 sparse triangular solves in CHOLMOD; LinearSolve.jl
 adds no measurable overhead), the same as the Python port's `fast` solver; the dense
