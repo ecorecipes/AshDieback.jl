@@ -8,6 +8,8 @@ Fields:
 - `x::Vector{Int}`, `y::Vector{Int}`: grid indices of the visited quadrats.
 - `proportion::Vector{Float64}`: mean proportion of trees with symptoms over the visits.
 - `visits::Vector{Int}`: number of plot visits; each visit observes `observed_trees` trees.
+- `visit_x`, `visit_y`, `visit_proportion`: the individual plot visits behind the means, in
+  file order, as [`rmse`](@ref) uses them.
 
 Repeat visits to a quadrat are merged in file order with a running mean, as PEOC does.
 """
@@ -17,6 +19,9 @@ struct YearObservations
     y::Vector{Int}
     proportion::Vector{Float64}
     visits::Vector{Int}
+    visit_x::Vector{Int}
+    visit_y::Vector{Int}
+    visit_proportion::Vector{Float64}
 end
 
 Base.length(o::YearObservations) = length(o.x)
@@ -155,8 +160,8 @@ function read_observations(path, grid, years)
         p = Float64[]
         c = Int[]
         position = Dict{Tuple{Int,Int},Int}()
-        for r in eachindex(year)
-            year[r] == a || continue
+        rows_a = findall(==(a), year)
+        for r in rows_a
             key = (Int(xi[r]) + 1, Int(yi[r]) + 1)
             k = get(position, key, 0)
             if k == 0
@@ -169,7 +174,8 @@ function read_observations(path, grid, years)
                 c[k] += 1
             end
         end
-        YearObservations(a, first.(keys), last.(keys), p .* 0.01, c)
+        YearObservations(a, first.(keys), last.(keys), p .* 0.01, c,
+                         Int.(xi[rows_a]) .+ 1, Int.(yi[rows_a]) .+ 1, preval[rows_a] .* 0.01)
     end
 end
 

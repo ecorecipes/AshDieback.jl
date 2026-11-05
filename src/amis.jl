@@ -38,7 +38,9 @@ struct AMISResult
 end
 
 """
-    amis([rng], target, mean, covariance; iterations, samples, threaded = Threads.nthreads() > 1)
+    amis([rng], target, mean, covariance; iterations, samples,
+         threaded = Threads.nthreads() > 1, callback = nothing)
+    amis([rng], target, previous::AMISResult; iterations, samples, ...)
 
 Adaptive multiple importance sampling (Cornuet et al. 2012), as used by PEOC for the paper's
 posterior. `target` is a LogDensityProblems.jl log density, such as an
@@ -51,27 +53,37 @@ weights of all draws so far, wᵢ ∝ π(θᵢ) / ((1/(k+1)) Σⱼ φ(θᵢ; m�
 to their weighted mean and covariance. The mixture is evaluated on the log scale, so it is
 better conditioned than PEOC's; the algorithm is the same. Throws a
 [`DegenerateProposalError`](@ref) if the proposal covariance becomes singular.
+
+With `previous`, it continues that run for `iterations` more iterations, which given the same
+`rng` state matches a single longer run. `callback(result, k)` is called after iteration `k`,
+for example to save a checkpoint; `result` is updated in place, so copy what must be kept.
 """
 function amis(rng::AbstractRNG, target, mean::AbstractVector, covariance::AbstractMatrix;
-              iterations::Integer, samples::Integer,
-              threaded::Bool = Threads.nthreads() > 1)
+              kwargs...)
     d = LogDensityProblems.dimension(target)
     length(mean) == d && size(covariance) == (d, d) ||
         throw(ArgumentError("mean and covariance must have dimension $d"))
+    res = AMISResult(Matrix{Float64}[], Vector{Float64}[], Vector{Float64}[],
+                     [Vector{Float64}(mean)], [Matrix{Float64}(covariance)])
+    return amis(rng, target, res; kwargs...)
+end
+
+function amis(rng::AbstractRNG, target, previous::AMISResult; iterations::Integer,
+              samples::Integer, threaded::Bool = Threads.nthreads() > 1, callback = nothing)
     iterations >= 1 && samples >= 1 ||
         throw(ArgumentError("iterations and samples must be positive"))
-    proposals = MvNormal[]
-    m, Σ = Vector{Float64}(mean), Matrix{Float64}(covariance)
-    res = AMISResult(Matrix{Float64}[], Vector{Float64}[], Vector{Float64}[], [copy(m)],
-                     [copy(Σ)])
-    logφ = Vector{Float64}[]  # logφ[i][j]: log density of draw i under proposal j
-    for k in 1:iterations
-        q = try
-            MvNormal(m, Symmetric(Σ))
-        catch e
-            e isa PosDefException || rethrow()
-            throw(DegenerateProposalError(k, "the proposal covariance is not positive definite"))
-        end
+    res = AMISResult(copy(previous.samples), copy(previous.logdensity),
+                     copy(previous.weights), copy(previous.means), copy(previous.covariances))
+    done = length(res.samples)
+    # log densities of every earlier draw under every earlier proposal
+    proposals = [amis_proposal(res.means[j], res.covariances[j], j) for j in 1:done]
+    logφ = Vector{Float64}[]
+    for X in res.samples, i in axes(X, 2)
+        x = view(X, :, i)
+        push!(logφ, [logpdf(q, x) for q in proposals])
+    end
+    for k in (done + 1):(done + iterations)
+        q = amis_proposal(res.means[end], res.covariances[end], k)
         push!(proposals, q)
         X = rand(rng, q, samples)
         λ = Vector{Float64}(undef, samples)
@@ -86,38 +98,104 @@ function amis(rng::AbstractRNG, target, mean::AbstractVector, covariance::Abstra
         end
         push!(res.samples, X)
         push!(res.logdensity, λ)
-        for v in logφ  # old draws under the new proposal
-            push!(v, NaN)
-        end
         Xall = reduce(hcat, res.samples)
-        for (i, v) in enumerate(logφ)
-            v[end] = logpdf(q, view(Xall, :, i))
+        for (i, v) in enumerate(logφ)  # old draws under the new proposal
+            push!(v, logpdf(q, view(Xall, :, i)))
         end
         for i in (size(Xall, 2) - samples + 1):size(Xall, 2)  # new draws under all proposals
-            push!(logφ, [logpdf(p, view(Xall, :, i)) for p in proposals])
+            x = view(Xall, :, i)
+            push!(logφ, [logpdf(p, x) for p in proposals])
         end
-        λall = reduce(vcat, res.logdensity)
-        logw = [isfinite(λall[i]) ? λall[i] - (logsumexp(logφ[i]) - log(k)) : -Inf
-                for i in eachindex(λall)]
-        any(isfinite, logw) ||
-            throw(DegenerateProposalError(k, "every draw has zero target density"))
-        w = exp.(logw .- maximum(logw))
-        w ./= sum(w)
-        m = Xall * w
-        Xc = Xall .- m
-        Σ = (Xc .* w') * Xc'
-        Σ = (Σ + Σ') / 2
-        push!(res.means, copy(m))
-        push!(res.covariances, copy(Σ))
+        w = amis_weights(reduce(vcat, res.logdensity), logφ, k)
+        m, Σ = weighted_moments(Xall, w)
+        push!(res.means, m)
+        push!(res.covariances, Σ)
         empty!(res.weights)
         offset = 0
         for λk in res.logdensity
             push!(res.weights, w[(offset + 1):(offset + length(λk))])
             offset += length(λk)
         end
+        callback === nothing || callback(res, k)
     end
     return res
 end
 
-amis(target, mean, covariance; kwargs...) =
-    amis(Random.default_rng(), target, mean, covariance; kwargs...)
+function amis(target, mean_or_previous, args...; kwargs...)
+    return amis(Random.default_rng(), target, mean_or_previous, args...; kwargs...)
+end
+
+function amis_proposal(m, Σ, k)
+    try
+        return MvNormal(m, Symmetric(Σ))
+    catch e
+        e isa PosDefException || rethrow()
+        throw(DegenerateProposalError(k, "the proposal covariance is not positive definite"))
+    end
+end
+
+# The deterministic-mixture weights of PEOC's compute_weight, given each draw's target log
+# density and its log density under each of the k proposals.
+function amis_weights(λ::AbstractVector, logφ::AbstractVector, k::Integer)
+    logw = [isfinite(λ[i]) ? λ[i] - (logsumexp(logφ[i]) - log(k)) : -Inf for i in eachindex(λ)]
+    any(isfinite, logw) ||
+        throw(DegenerateProposalError(k, "every draw has zero target density"))
+    w = exp.(logw .- maximum(logw))
+    return w ./ sum(w)
+end
+
+# PEOC's compute_mean_variance: the plain weighted mean and covariance of the columns of X.
+function weighted_moments(X::AbstractMatrix, w::AbstractVector)
+    m = X * w
+    Xc = X .- m
+    Σ = (Xc .* w') * Xc'
+    return m, (Σ + Σ') / 2
+end
+
+"""
+    amis_draws(res::AMISResult)
+
+All the draws of `res` as `(samples, logdensity, weights)`: a matrix with one column per
+draw, and two vectors.
+"""
+function amis_draws(res::AMISResult)
+    return reduce(hcat, res.samples), reduce(vcat, res.logdensity), reduce(vcat, res.weights)
+end
+
+"""
+    effective_sample_size(res::AMISResult)
+
+Kish's effective sample size of the final weights, 1 / Σ wᵢ².
+"""
+effective_sample_size(res::AMISResult) = 1 / sum(sum(abs2, w) for w in res.weights)
+
+"""
+    best_sample(res::AMISResult)
+
+The draw of `res` with the highest target log density, as `(x, logdensity)`. The paper's
+θmax (eq. 14) is the best sample of its AMIS run.
+"""
+function best_sample(res::AMISResult)
+    X, λ, _ = amis_draws(res)
+    i = argmax(λ)
+    return X[:, i], λ[i]
+end
+
+"""
+    weighted_quantile(x, w, p)
+
+The `p` quantile of the values `x` with weights `w`: the smallest value whose cumulative
+normalised weight reaches `p`. A helper for marginal summaries of an [`AMISResult`](@ref).
+"""
+function weighted_quantile(x::AbstractVector, w::AbstractVector, p::Real)
+    0 <= p <= 1 || throw(ArgumentError("p must be in [0, 1], not $p"))
+    length(x) == length(w) || throw(ArgumentError("x and w must have the same length"))
+    order = sortperm(x)
+    total = sum(w)
+    c = 0.0
+    for i in order
+        c += w[i]
+        c >= p * total && return x[i]
+    end
+    return x[order[end]]
+end

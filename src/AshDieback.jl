@@ -59,7 +59,11 @@ include("mcmc.jl")
 export ComponentwiseGammaMH, GammaMHTransition, GammaMHState, peoc_mh_shapes
 
 include("amis.jl")
-export AMISResult, amis
+export AMISResult, amis, amis_draws, effective_sample_size, best_sample, weighted_quantile
+
+include("validation.jl")
+export RMSETable, rmse, LikelihoodGrid, likelihood_grid, peoc_grid_axes, profile_likelihood,
+       best_parameters
 
 include("plotting.jl")
 

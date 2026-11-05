@@ -11,7 +11,8 @@ makedocs(;
                                   canonical = "https://ecorecipes.github.io/AshDieback.jl"),
          pages = ["Home" => "index.md",
                   "Tutorials" => ["The ash dieback model" => "tutorials/01_introduction.md",
-                                  "Inference" => "tutorials/02_inference.md"],
+                                  "Inference" => "tutorials/02_inference.md",
+                                  "Validation and the likelihood surface" => "tutorials/03_validation.md"],
                   "API Reference" => ["Data" => "api/data.md",
                                       "Model" => "api/model.md",
                                       "Inference" => "api/inference.md"]])

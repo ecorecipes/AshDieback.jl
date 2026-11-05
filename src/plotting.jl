@@ -19,3 +19,13 @@
     ylabel --> "y quadrat"
     return permutedims(Z)
 end
+
+# `plot(grid; x = :beta_0, y = :D)`: the profile log-likelihood over two parameters
+@recipe function f(grid::LikelihoodGrid; x = grid.names[1], y = grid.names[2])
+    Z = profile_likelihood(grid, y, x)
+    seriestype := :heatmap
+    xlabel --> string(x)
+    ylabel --> string(y)
+    colorbar_title --> "profile log-likelihood"
+    return grid.axes[findfirst(==(x), grid.names)], grid.axes[findfirst(==(y), grid.names)], Z
+end

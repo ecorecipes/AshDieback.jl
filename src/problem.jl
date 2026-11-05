@@ -113,12 +113,16 @@ function AshDiebackProblem(data::PEOCData, p::AbstractVector;
 end
 
 """
-    remake(prob::AshDiebackProblem; p = prob.p)
+    remake(prob::AshDiebackProblem; p = prob.p, settings = prob.settings)
 
-A copy of `prob` with parameters `p`; the data, settings and precomputed constants are
-shared.
+A copy of `prob` with parameters `p` and `settings`. With the same settings, the data and
+precomputed constants are shared. Changing `final_year` extends the simulation beyond the
+fitted period, as in the paper's validation on 2020–2023:
+`remake(prob; settings = ModelSettings(; final_year = 2023))`.
 """
-function SciMLBase.remake(prob::AshDiebackProblem; p = prob.p)
+function SciMLBase.remake(prob::AshDiebackProblem; p = prob.p, settings = prob.settings)
+    settings === prob.settings || settings == prob.settings ||
+        return AshDiebackProblem(prob.data, p; settings)
     return AshDiebackProblem(prob.data, AshDiebackParameters(p), prob.settings, prob.scheme,
                              prob.laplacian, prob.binomial, prob.survey)
 end

@@ -5,7 +5,7 @@ across France of Fritsch, Grosdidier, Gégout-Petit and Marçais
 ([HAL 04690647](https://hal.science/hal-04690647)), with its data and its Bayesian
 inference. It is a Julia port of [PEOC](https://github.com/coraliefritsch/peoc), the
 authors' Python code, and reproduces its log-likelihoods to a relative 1e-14; a likelihood
-takes under 2 s, against about a minute for PEOC 1.0.
+takes about 0.7 s, against about a minute for PEOC 1.0.
 
 ## Features
 
@@ -19,7 +19,9 @@ takes under 2 s, against about a minute for PEOC 1.0.
   posterior under uniform priors as a LogDensityProblems.jl density.
 - **PEOC's samplers**: the component-wise gamma-proposal Metropolis–Hastings as an
   AbstractMCMC.jl sampler (with MCMCChains output) and adaptive multiple importance sampling
-  (AMIS), threaded.
+  (AMIS), threaded and resumable.
+- **Validation and diagnostics**: forecasts beyond the fitted years, the RMSE of the paper's
+  Table 4, and the log-likelihood on a regular grid with profiles.
 - **Turing.jl** model of the posterior (package extension), and Plots.jl recipes for maps.
 
 ## Quick start
@@ -48,6 +50,7 @@ chain = sample(post, ComponentwiseGammaMH(post), 1_000;
 |---|----------|-------------|
 | 1 | [The ash dieback model](vignettes/01_introduction/01_introduction.md) | Data, simulation, maps and the likelihood, checked against PEOC |
 | 2 | [Inference](vignettes/02_inference/02_inference.md) | The posterior, Metropolis–Hastings, AMIS and Turing |
+| 3 | [Validation and the likelihood surface](vignettes/03_validation/03_validation.md) | Table 4, forecasts for 2020–2023, and the likelihood on a grid |
 
 ## Installation
 
