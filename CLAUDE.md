@@ -59,6 +59,10 @@ transport file was found"; render again once `status` shows the server running.
 MCMCChains' default `plot(chain)` needs StatsPlots.jl, which the vignettes do not load: use
 `seriestype = :traceplot`.
 
+CI (`.github/workflows/CI.yml`) runs the tests on Julia 1.11 and the latest release on Linux,
+macOS and Windows, and deploys the docs to GitHub Pages from `main`. It uses the committed
+`docs/src/tutorials`, so re-render and sync the vignettes before pushing changes to them.
+
 One likelihood takes about 1.3–1.5 s (6000 sparse triangular solves in CHOLMOD; LinearSolve.jl
 adds no measurable overhead), the same as the Python port's `fast` solver; the dense
 reference about a minute.
