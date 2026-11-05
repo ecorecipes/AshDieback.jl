@@ -2,8 +2,10 @@
 # 10 000 draws, T28 index, fitted to 2008-2019. It takes about 24 h on 8 threads, saves a
 # checkpoint after every iteration, and resumes from one if it exists.
 #
-#   julia --project --threads=8 scripts/run_amis.jl [folder] [iterations] [samples] [seed]
+#   julia --project --threads=8 scripts/run_amis.jl [folder] [iterations] [samples] [seed] [delta_t]
 #
+# delta_t defaults to the paper's 0.1. A coarser step is an approximation: delta_t = 1 is 10 times
+# faster, with log-likelihood errors of about 0.04 (sd) between draws near the posterior.
 # Default folder: runs/amis_T28 (git-ignored). Writes checkpoint.jls, which holds the
 # AMISResult and the RNG state, and log.csv, one row per iteration. The deviation columns are
 # eq. (18) of the paper for each parameter, with cells of a fifth of Table 2's standard
@@ -20,6 +22,7 @@ folder = get(ARGS, 1, joinpath(pkgdir(AshDieback), "runs", "amis_T28"))
 iterations = parse(Int, get(ARGS, 2, "60"))
 samples = parse(Int, get(ARGS, 3, "10000"))
 seed = parse(Int, get(ARGS, 4, "1"))
+delta_t = parse(Float64, get(ARGS, 5, "0.1"))
 mkpath(folder)
 checkpoint = joinpath(folder, "checkpoint.jls")
 logfile = joinpath(folder, "log.csv")
@@ -27,7 +30,8 @@ logfile = joinpath(folder, "log.csv")
 θ0 = AshDiebackParameters(; r_symp = 1000.0, r_allee = 0.0, beta_0 = 24.0, beta_1 = 0.0,
                           D = 18.0, S_sat = 90.0, gamma = 21.50001, C_pers = 1.0,
                           C_init = 0.0085, kappa = 0.05)
-post = AshDiebackPosterior(AshDiebackProblem(load_peoc_data(), θ0),
+post = AshDiebackPosterior(AshDiebackProblem(load_peoc_data(), θ0;
+                                             settings = ModelSettings(; delta_t)),
                            reduced_model_prior_ranges())
 names = free_parameters(post)
 @assert names == [:beta_0, :D, :S_sat, :C_init, :kappa]
