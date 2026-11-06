@@ -12,7 +12,8 @@ makedocs(;
          pages = ["Home" => "index.md",
                   "Tutorials" => ["The ash dieback model" => "tutorials/01_introduction.md",
                                   "Inference" => "tutorials/02_inference.md",
-                                  "Validation and the likelihood surface" => "tutorials/03_validation.md"],
+                                  "Validation and the likelihood surface" => "tutorials/03_validation.md",
+                                  "Fast AMIS" => "tutorials/04_fast_amis.md"],
                   "API Reference" => ["Data" => "api/data.md",
                                       "Model" => "api/model.md",
                                       "Inference" => "api/inference.md"]])

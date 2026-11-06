@@ -51,6 +51,7 @@ chain = sample(post, ComponentwiseGammaMH(post), 1_000;
 | 1 | [The ash dieback model](vignettes/01_introduction/01_introduction.md) | Data, simulation, maps and the likelihood, checked against PEOC |
 | 2 | [Inference](vignettes/02_inference/02_inference.md) | The posterior, Metropolis–Hastings, AMIS and Turing |
 | 3 | [Validation and the likelihood surface](vignettes/03_validation/03_validation.md) | Table 4, forecasts for 2020–2023, and the likelihood on a grid |
+| 4 | [Fast AMIS](vignettes/04_fast_amis/04_fast_amis.md) | AMIS in minutes with a coarser time step, and how to check the approximation |
 
 ## Installation
 
