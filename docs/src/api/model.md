@@ -19,11 +19,35 @@ temperature_effect
 
 ```@docs
 AshDiebackProblem
-CommonSolve.solve(::AshDiebackProblem, ::AbstractDiffusionAlgorithm)
+CommonSolve.solve
 SciMLBase.remake(::AshDiebackProblem)
 AshDiebackSolution
 initial_fungi
 symptom_probability
+```
+
+## A changing host
+
+```@docs
+HostClass
+HostDynamics
+constant_host
+HostProblem
+HostSolution
+host_years
+live_host
+symptom_share
+```
+
+## Interventions
+
+```@docs
+AbstractIntervention
+Vaccinate
+vaccinated_class
+PlantStock
+Fell
+ReduceLitter
 ```
 
 ## Diffusion

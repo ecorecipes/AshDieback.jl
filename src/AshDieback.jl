@@ -65,6 +65,11 @@ include("validation.jl")
 export RMSETable, rmse, LikelihoodGrid, likelihood_grid, peoc_grid_axes, profile_likelihood,
        best_parameters
 
+include("host.jl")
+export HostClass, HostDynamics, HostProblem, HostSolution, constant_host, host_years, live_host,
+       symptom_share, AbstractIntervention, Vaccinate, PlantStock, Fell, ReduceLitter,
+       vaccinated_class
+
 include("plotting.jl")
 
 include("turing.jl")

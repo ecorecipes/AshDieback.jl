@@ -37,6 +37,7 @@ package was built from).
 - `src/likelihood.jl`, `src/posterior.jl`: likelihoods; the LogDensityProblems posterior.
 - `src/mcmc.jl`, `src/amis.jl`: PEOC's samplers (AbstractMCMC sampler; AMIS).
 - `src/validation.jl`: the RMSE of Table 4 and the likelihood on a regular grid.
+- `src/host.jl`: `HostProblem`, the same spore model with a changing host (classes, juveniles, death, recruitment) and interventions (`Vaccinate`, `PlantStock`, `Fell`, `ReduceLitter`). `constant_host()` must keep reproducing `solve(prob)`.
 - `ext/`: Turing (`turing_model`) and MCMCChains (`bundle_samples`) extensions.
 - `data/`: PEOC 1.0's input data, unchanged (CeCILL v2.1, see `data/README.md`).
 - `test/reference/`: the oracle and the script that generates it from a PEOC dump.
