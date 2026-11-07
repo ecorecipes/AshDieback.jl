@@ -60,7 +60,7 @@ a single QuartoNotebookRunner server, shared by every process on the machine. Ne
 or kill it (`quarto call engine julia status` is read-only). Quarto waits only about 10 s
 for a new server to start, so on a loaded machine the first render fails with "No
 transport file was found"; render again once `status` shows the server running.
-Vignette 5 reads two results too slow to run live from `results/` (`scripts/export_vignette_results.jl`, `peoc_py3/scripts/export_a1_chains.py`) and writes `posterior_draws.csv`, which vignette 6 reads. Vignette 6's sweeps cache to `results/*.csv` and resume: delete a file to recompute it. The cached `posterior` rows are keyed on each draw's β₀, so new draws recompute by themselves. Rendering it from empty takes hours.
+Vignette 5 reads two results too slow to run live from `results/` (`scripts/export_vignette_results.jl`, `peoc_py3/scripts/export_a1_chains.py`) and writes `posterior_draws.csv`, which vignette 6 reads. Vignette 6's sweeps cache to `results/*.csv` and resume: delete a file to recompute it. The cached `posterior` rows are keyed on each draw's β₀, so new draws recompute by themselves. Rendering it from empty takes hours. Its `recovery_refits.csv` (French refits at fixed C_pers) runs serially in the vignette, because threaded refits crashed with heap corruption; the cached rows were made by the same code run as one single-threaded process per C_pers.
 MCMCChains' default `plot(chain)` needs StatsPlots.jl, which the vignettes do not load: use
 `seriestype = :traceplot`.
 

@@ -12,7 +12,8 @@ vaccinating trees, planting tolerant stock, felling and clearing leaf litter, to
 
 **In short, which intervention comes out ahead depends mainly on how good the product is, when it can
 start and at what rate, and how far ahead you look.** Long-term regeneration and the share of trees
-already symptomatic can also change the order. The fitted disease parameters and warming to 2075 change vaccine
+already symptomatic can also change the order, and so can the little recovery of symptomatic trees that
+the French data allow. The fitted disease parameters and warming to 2075 change vaccine
 and planting results far less. The numbers are in the [summary](#summary) at the end,
 with the field data that would help most.
 
@@ -475,8 +476,8 @@ kent_years = 2017:2024
 @assert kent_mean.year == collect(kent_years)
 survey_mean = kent_mean.mean_share
 
-function kent_model(rs)
-    prob, _ = gb_problem(inputs; B = 15.0, theta = theta_rate(rs), final_year = 2030)
+function kent_model(rs; theta = theta_rate(rs))
+    prob, _ = gb_problem(inputs; B = 15.0, theta, final_year = 2030)
     sol = solve(HostProblem(prob, host_for(0.03, 0.04, SCENARIOS["baseline"])))
     ys = host_years(sol)
     cells = [cell(r.easting_km, r.northing_km) for r in eachrow(kent)]
@@ -617,6 +618,135 @@ margin_table(["k=$k" for k in KS])
 The central vaccine and planting hardly move, because they protect the trees they act on. Felling and partial
 litter clearing are what depend on the margin, so B is the input to pin down for those.
 
+## Recovery
+
+Every run so far has C_pers = 1: a tree with symptoms keeps them until it dies. With C_pers < 1, a share
+1 − C_pers of symptomatic trees recover each year and can be infected again, so the share symptomatic levels
+off below 1, at about q̃ / (1 − C_pers + C_pers q̃) for a yearly chance q̃ of new symptoms. Kent's fall after
+2022 could be recovery. The French data can test it. Here C_pers is fixed and β₀, D, S, C_init and κ are
+refitted to France by Nelder–Mead, as for the margin above. The refits run one after another, since threaded
+refits have crashed with heap corruption (cause not found), so recomputing them takes some hours:
+
+```{julia}
+const CS = (1.0, 0.99, 0.985, 0.98, 0.97, 0.95, 0.9, 0.8, 0.7, 0.5)
+xlogy0(k, r) = k == 0 ? 0.0 : k * log(r)
+function dispersion(sol)  # Pearson and deviance per df over cells with n q (1 − q) ≥ 1
+    p = d = 0.0
+    m = 0
+    for (l, (o, b)) in enumerate(zip(sol.prob.survey, sol.prob.binomial))
+        q = view(sol.symptoms, :, :, l)
+        for i in eachindex(o.x)
+            k, nk = b.infected[i], b.healthy[i]
+            n = k + nk
+            qi = clamp(q[o.x[i], o.y[i]], 1e-300, 1 - 1e-16)
+            n * qi * (1 - qi) >= 1 || continue
+            p += (k - n * qi)^2 / (n * qi * (1 - qi))
+            d += 2 * (xlogy0(k, k / (n * qi)) + xlogy0(nk, nk / (n * (1 - qi))))
+            m += 1
+        end
+    end
+    return p / (m - 6), d / (m - 6), m
+end
+θ_rec(x, C) = [1000.0, 0.0, exp(x[1]), 0.0, exp(x[2]), exp(x[3]), 21.50001, C, exp(x[4]), exp(x[5])]
+
+function recovery_refits(Cs)
+    path = joinpath(RESULTS, "recovery_refits.csv")
+    isfile(path) || write(path, "C_pers,beta_0,D,S,C_init,kappa,loss,pearson,deviance,cells\n")
+    todo = [C for C in Cs if C ∉ CSV.read(path, DataFrame).C_pers]
+    if !isempty(todo)
+        base = load_peoc_data()
+        ref = loglikelihood(AshDiebackProblem(base, [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]))
+        for C in todo
+            nll(x) = begin  # x = log(β₀, D, S, C_init, κ)
+                v = loglikelihood(AshDiebackProblem(base, θ_rec(x, C)))
+                isfinite(v) ? -v : 1e12
+            end
+            # With recovery, the observed rise needs a larger yearly chance of symptoms, so start from a scan of β₀ and S.
+            starts = [log.([23.26 * fb, 18.51, 92.0 * fs, 0.00855, 0.056]) for fb in (1.0, 1.5, 2.5) for fs in (1.0, 1.4, 2.0, 3.0)]
+            x0 = starts[argmin(nll.(starts))]
+            x, _ = nelder_mead(nll, x0; maxeval = 400)
+            x, _ = nelder_mead(nll, x; step = 0.05, maxeval = 250)
+            x, v = nelder_mead(nll, x; step = 0.01, maxeval = 150)
+            pe, de, m = dispersion(solve(AshDiebackProblem(base, θ_rec(x, C))))
+            open(io -> write(io, join((C, exp.(x)..., v + ref, pe, de, m), ",") * "\n"), path, "a")
+        end
+    end
+    return sort(CSV.read(path, DataFrame), :C_pers; rev = true)
+end
+rec = recovery_refits(CS)
+const PHI_REC = 20.0
+# The 95 % limit on C_pers: where the loss over φ crosses 1.92, interpolating between refits
+c_limit = let i = findfirst(>(1.92), rec.loss ./ PHI_REC)
+    a, b = rec[i - 1, :], rec[i, :]
+    a.C_pers + (1.92 * PHI_REC - a.loss) / (b.loss - a.loss) * (b.C_pers - a.C_pers)
+end
+nothing
+```
+
+```{julia}
+#| output: asis
+md_table(["C_pers", "Recover each year", "β₀", "D", "S", "κ", "Log-likelihood lost", "Lost / φ", "Pearson / df"],
+         [[r.C_pers, fmt(1 - r.C_pers, 3), fmt(r.beta_0, 1), fmt(r.D, 1), fmt(r.S, 0), fmt(r.kappa), fmt(max(r.loss, 0.0), 1),
+           fmt(max(r.loss, 0.0) / PHI_REC, 1), fmt(r.pearson, 1)] for r in eachrow(rec)])
+```
+
+**France allows little recovery.** Even with the log-likelihood divided by φ = 20, the 95 % limit is at
+C_pers ≈ `{julia} fmt(c_limit, 3)`, so at most about `{julia} round(Int, 100 * (1 - c_limit))` % of
+symptomatic trees recovering each year. Recovery also leaves the overdispersion at about 20, so it doesn't
+explain the scatter. As the refits are not checked for convergence, a loss may be overstated, but the loss grows
+steadily as C_pers falls. On Great Britain, at B = 15, with each C_pers's refitted parameters (and C_init = 0.05
+as before), including values France rejects, to see what Kent's level would need:
+
+```{julia}
+const GB_CS = (1.0, 0.98, 0.9, 0.8)
+rec_row(C) = rec[findfirst(==(C), rec.C_pers), :]
+θ_gb(r) = [1000.0, 0.0, r.beta_0, 0.0, r.D, r.S, 21.50001, r.C_pers, 0.05, r.kappa]
+rec_names = ["baseline", "baseline s 0.05", CENTRAL_V, HUNDRED_V, PERFECT_V, PLANT, PLANT_T, "fell 50 %", "clear 95 % of litter"]
+rec_runs = sweep("recovery", [case((; setting = "C=$C"), n; θ = θ_gb(rec_row(C))) for C in GB_CS for n in rec_names])
+rg, rv = lookups(rec_runs).gain, lookups(rec_runs).value
+rq26, rq75 = lookups(rec_runs; year = 2026, col = :q).value, lookups(rec_runs; col = :q).value
+nrow(rec_runs)
+```
+
+```{julia}
+#| output: asis
+rec_cols = [CENTRAL_V, HUNDRED_V, PERFECT_V, PLANT, PLANT_T, "clear 95 % of litter", "fell 50 %"]
+md_table(["C_pers", "q 2026", "q 2075", "Healthy adults 2075", "Central vaccine", "100 % vaccine", "Perfect vaccine",
+          "Plant s 0.2", "Plant s 0.05", "Clear 95 % of litter", "Fell 50 %"],
+         [[C, fmt(rq26("C=$C", "baseline"), 2), fmt(rq75("C=$C", "baseline"), 2), fmt(rv("C=$C", "baseline")),
+           (fmt(rg("C=$C", n)) for n in rec_cols)...] for C in GB_CS])
+```
+
+**Within what France allows, recovery helps the trees and changes the order at the top.** At C_pers = 0.98,
+healthy adults in 2075 are `{julia} fmt(rv("C=0.98", "baseline"))` of today's ash with no intervention, against
+`{julia} fmt(rv("C=1.0", "baseline"))` with no recovery, and q in 2075 is `{julia} fmt(rq75("C=0.98", "baseline"), 2)`
+rather than `{julia} fmt(rq75("C=1.0", "baseline"), 2)`. Vaccines and litter clearing gain more, probably because
+recovered trees can be protected again, and less inoculum lets more of them stay healthy. A perfect vaccine gains
+`{julia} fmt(rg("C=0.98", PERFECT_V))` and clearing 95 % of litter `{julia} fmt(rg("C=0.98", "clear 95 % of litter"))`,
+both above very tolerant planting's `{julia} fmt(rg("C=0.98", PLANT_T))`, which leads with no recovery. Felling half of
+symptomatic adults a year gains `{julia} fmt(rg("C=0.98", "fell 50 %"))`, as it removes trees that could have recovered.
+The central vaccine still gains much less than planting at the central tolerance.
+
+```{julia}
+kent_rec = Dict(C => kent_model(1.0; theta = θ_gb(rec_row(C))) for C in GB_CS)
+fig_rec = plot(kent_years, survey_mean; label = "survey, mean of tetrads", marker = :circle, color = :black, xlabel = "Year",
+               ylabel = "share with symptoms, with the model's dead", legend = :bottomright, ylims = (0, 1))
+for (C, col) in zip(GB_CS, (BLUE, AQUA, ORANGE, VIOLET))
+    plot!(fig_rec, kent_years, kent_rec[C][2]; label = "model, C_pers = $C", color = col, linewidth = 2)
+end
+fig_rec
+```
+
+```{julia}
+rec_rmse = Dict(C => sqrt(mean((kent_rec[C][2][late_years] .- survey_mean[late_years]) .^ 2)) for C in GB_CS)
+(; rmse_2019_2024 = [C => round(rec_rmse[C]; digits = 3) for C in GB_CS])
+```
+
+**Recovery doesn't give Kent's shape.** Even at C_pers = 0.8, which France rejects, the model only levels off, and its
+error over 2019–2024 falls only from `{julia} fmt(rec_rmse[1.0])` to `{julia} fmt(rec_rmse[0.8])`. A steady rate of
+recovery can't make the share fall while spores stay at the cap, so Kent's fall needs something that changes over
+time, such as felling, a change of observers, or recovery that varies from year to year.
+
 ## Warming
 
 The temperature function is close to a step, so summers past about 21.5 days over 28 °C stop new symptoms in the
@@ -735,6 +865,7 @@ rows_m = [("Regeneration and tree death", extrema(gg(ρ, μ, CENTRAL_V) for (ρ,
           ("Stand basal area (B 5–35)", extrema(mg("B=$b", CENTRAL_V) for b in BS), extrema(mg("B=$b", PLANT) for b in BS)),
           ("Margin over the cap (k 1–5)", extrema(mg("k=$k", CENTRAL_V) for k in KS), extrema(mg("k=$k", PLANT) for k in KS)),
           ("Warming to 2075", extrema(wg(s, m, CENTRAL_V) for (s, m) in climates), extrema(wg(s, m, PLANT) for (s, m) in climates)),
+          ("Recovery (C_pers 0.98–1)", extrema(rg("C=$C", CENTRAL_V) for C in (1.0, 0.98)), extrema(rg("C=$C", PLANT) for C in (1.0, 0.98))),
           ("French parameters, φ = 20", interval(over(pl75.gain, "phi20", 15, CENTRAL_V)), interval(over(pl75.gain, "phi20", 15, PLANT)))]
 fig_m = plot(; yticks = (1:length(rows_m), reverse(first.(rows_m))), xlims = (0, 0.42), xlabel = "Gain in healthy adults in 2075 (share of today's ash)",
              legend = :outertop, legendcolumns = 2, size = (950, 520), left_margin = 4Plots.mm, bottom_margin = 4Plots.mm, grid = :x)
@@ -780,6 +911,10 @@ println("""
 - **Regeneration and the share already symptomatic can change the order.** The 100 % vaccine beats planting at the central
   tolerance in $(9 - length(beats(PLANT, HUNDRED_V))) of the 9 cells of the regeneration grid, and when $(fmt(sq("rate halved", "baseline"), 2)) of ash is symptomatic in
   2026 rather than $(fmt(sq("seeded 2014 (central)", "baseline"), 2)).
+- **France allows little recovery, but even that favours a perfect vaccine and litter clearing.** At most about
+  $(round(Int, 100 * (1 - c_limit))) % of symptomatic trees can recover each year. At that rate, a perfect vaccine
+  ($(fmt(rg("C=0.98", PERFECT_V), 2))) and clearing 95 % of litter ($(fmt(rg("C=0.98", "clear 95 % of litter"), 2))) pass very tolerant
+  planting ($(fmt(rg("C=0.98", PLANT_T), 2))) at B = 15. Recovery doesn't explain Kent's fall.
 - **Felling and clearing part of the litter do little for healthy trees.** Felling half of symptomatic adults a year gains
   $(fmt(g75("fell 50 %"), 2)) healthy adults and changes all adults by $(@sprintf("%+.2f", mean(over(pa75.gain, "phi20", 15, "fell 50 %")))).
   Clearing 50 % of litter gains $(fmt(g75("clear 50 % of litter"), 2)). At the best-fit parameters, clearing 95 % ends the epidemic in the model, but it means treating
@@ -797,7 +932,8 @@ These are ordered by how much they could change the ranking above.
 2. **Long-term regeneration.** It decides the long-run result and whether a 100 % vaccine beats planting. Repeat counts of
    seedlings and saplings in affected stands would address it.
 3. **Repeated surveys of symptoms and deaths with a fixed protocol, including recovery.** Kent's fall after 2022 could be
-   recovery, felling or a change of observers. If it is recovery, it challenges "no recovery", which underlies the model.
+   felling, a change of observers or recovery. A steady rate of recovery doesn't produce it in the model, and France
+   allows little, but even 2 % a year changes the order at the top, so tracking the same trees would settle it.
 4. **For a vaccine: efficacy, duration and how fast it could reach trees.** All are assumed here, and they matter more than
    the coverage cap.
 5. **Ash basal area including trees outside woodland.** This matters for felling and partial litter clearing only.
@@ -810,7 +946,8 @@ These are ordered by how much they could change the ranking above.
   and not in shape.
 - **Inputs without evidence:** every vaccine input, tolerant stock's traits, the native tolerant share and regeneration.
   These are sweeps, not estimates.
-- **The model has no recovery,** and no stand scale. Spores mix across each 10 km square, so a stand protected by clearing
+- **Recovery is at a steady rate, and only up to what France allows** (about 2 % a year), except as a test. There is
+  no stand scale. Spores mix across each 10 km square, so a stand protected by clearing
   its own litter can't appear here, and such benefits may be larger than this suggests.
 - **No costs.** Areas treated are not costs, and a hectare planted differs from a hectare vaccinated. Felling's reasons of
   safety and amenity are outside the measure.
