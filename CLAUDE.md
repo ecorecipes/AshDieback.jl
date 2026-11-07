@@ -38,8 +38,10 @@ package was built from).
 - `src/mcmc.jl`, `src/amis.jl`: PEOC's samplers (AbstractMCMC sampler; AMIS).
 - `src/validation.jl`: the RMSE of Table 4 and the likelihood on a regular grid.
 - `src/host.jl`: `HostProblem`, the same spore model with a changing host (classes, juveniles, death, recruitment) and interventions (`Vaccinate`, `PlantStock`, `Fell`, `ReduceLitter`). `constant_host()` must keep reproducing `solve(prob)`.
+- `src/gb.jl`: Great Britain's inputs (`load_gb_inputs`, `load_gb_future`) and `gb_problem`. Nothing is fitted to GB.
 - `ext/`: Turing (`turing_model`) and MCMCChains (`bundle_samples`) extensions.
 - `data/`: PEOC 1.0's input data, unchanged (CeCILL v2.1, see `data/README.md`).
+- `data/gb/`: Great Britain's inputs, reduced to 10 km, under their own licences (`data/gb/README.md`).
 - `test/reference/`: the oracle and the script that generates it from a PEOC dump.
 
 ## Commands
@@ -58,6 +60,7 @@ a single QuartoNotebookRunner server, shared by every process on the machine. Ne
 or kill it (`quarto call engine julia status` is read-only). Quarto waits only about 10 s
 for a new server to start, so on a loaded machine the first render fails with "No
 transport file was found"; render again once `status` shows the server running.
+Vignette 5 reads two results too slow to run live from `results/` (`scripts/export_vignette_results.jl`, `peoc_py3/scripts/export_a1_chains.py`) and writes `posterior_draws.csv`, which vignette 6 reads. Vignette 6's sweeps cache to `results/*.csv` and resume: delete a file to recompute it. The cached `posterior` rows are keyed on each draw's β₀, so new draws recompute by themselves. Rendering it from empty takes hours.
 MCMCChains' default `plot(chain)` needs StatsPlots.jl, which the vignettes do not load: use
 `seriestype = :traceplot`.
 

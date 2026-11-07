@@ -29,6 +29,11 @@ format:
     colorlinks: true
     linkcolor: "blue"
     urlcolor: "blue"
+    include-in-header:
+      text: |
+        \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+        \RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
   gfm:
     toc: true
 

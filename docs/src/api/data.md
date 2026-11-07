@@ -15,3 +15,12 @@ quadrat_index
 DataFormatError
 AshDiebackError
 ```
+
+## Great Britain
+
+```@docs
+GBInputs
+load_gb_inputs
+load_gb_future
+gb_problem
+```

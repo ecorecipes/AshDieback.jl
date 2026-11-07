@@ -70,6 +70,9 @@ export HostClass, HostDynamics, HostProblem, HostSolution, constant_host, host_y
        symptom_share, AbstractIntervention, Vaccinate, PlantStock, Fell, ReduceLitter,
        vaccinated_class
 
+include("gb.jl")
+export GBInputs, load_gb_inputs, load_gb_future, gb_problem
+
 include("plotting.jl")
 
 include("turing.jl")
