@@ -3,7 +3,7 @@ using AshDieback: temperature_effect
 const THETA_HOST = [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]
 
 # A uniform grid: diffusion leaves a uniform field alone, so one quadrat can be followed by hand.
-function uniform_problem(; d = 0.5, psi = 1.0, T = 5.0, θ = THETA_HOST, last_year = 2030, n = Inf)
+function uniform_problem(; d = 0.5, psi = 1.0, T = 5.0, θ = THETA_HOST, last_year = 2030, n = Inf, a = nothing, b = 0.0)
     grid = QuadratGrid(; quadrat_length = 10.0, nx_mainland = 4, ny_mainland = 4,
                        border = (0, 0, 0, 0))
     nx, ny = size(grid)
@@ -13,7 +13,7 @@ function uniform_problem(; d = 0.5, psi = 1.0, T = 5.0, θ = THETA_HOST, last_ye
                     [YearObservations(a, Int[], Int[], Float64[], Int[], Int[], Int[], Float64[])
                      for a in 2000:last_year])
     settings = ModelSettings(; initialization_year = 2001, final_year = last_year, delta_t = 1.0,
-                             saturation_sharpness = n)
+                             saturation_sharpness = n, spore_exponent = a, cap_exponent = b)
     return AshDiebackProblem(data, θ; settings)
 end
 
@@ -99,6 +99,20 @@ end
                 @test sol.spore_load[2, 2, l] ≈ expected rtol = 1e-10
                 @test sol.fungi[2, 2, l] == saturate(sol.spore_load[2, 2, l], prob.p.S_sat, n)
             end
+        end
+        for a in (0.5, 1.0)
+            prob = uniform_problem(; psi = 0.01, a)
+            sol = solve(HostProblem(prob, HostDynamics([HostClass(:ash; mortality = 0.5)])))
+            for l in 3:8
+                @test sol.fungi[2, 2, l] ≈ prob.p.S_sat * (sol.spore_load[2, 2, l] / prob.p.S_sat)^a rtol = 1e-14
+            end
+        end
+        for b in (0.3, 1.0)
+            prob = uniform_problem(; psi = 1.0, b)
+            sol = solve(HostProblem(prob, HostDynamics([HostClass(:ash; mortality = 0.5)])))
+            S, w = prob.p.S_sat, sol.spore_load[2, 2, 3:8]
+            @test any(w .> S)   # the load passes the cap, so the broken law is exercised
+            @test sol.fungi[2, 2, 3:8] ≈ [x <= S ? x : S * (x / S)^b for x in w] rtol = 1e-14
         end
     end
 

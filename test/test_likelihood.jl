@@ -85,6 +85,70 @@
         @test abs(loglikelihood(soft) - ll) > 1
     end
 
+    @testset "power law in place of the cap" begin
+        S = 92.0
+        lin = ModelSettings(; spore_exponent = 1.0)
+        half = ModelSettings(; spore_exponent = 0.5)
+        @test AshDieback.rachis_response(50.0, S, ModelSettings()) == 50.0
+        @test AshDieback.rachis_response(500.0, S, ModelSettings()) == S
+        @test AshDieback.rachis_response(500.0, S, ModelSettings(; saturation_sharpness = 2.0)) == saturate(500.0, S, 2.0)
+        @test AshDieback.rachis_response(500.0, S, lin) ≈ 500.0   # a = 1: no cap at all
+        @test AshDieback.rachis_response(S, S, half) ≈ S
+        @test AshDieback.rachis_response(4S, S, half) ≈ 2S
+        @test AshDieback.rachis_response(1e-120, S, half) ≈ sqrt(1e-120 * S) rtol = 1e-12
+        @test AshDieback.rachis_response(0.0, S, half) == 0.0
+        @test_throws ArgumentError ModelSettings(; spore_exponent = 0.0)
+        @test_throws ArgumentError ModelSettings(; spore_exponent = -1.0)
+        @test_throws ArgumentError ModelSettings(; spore_exponent = Inf)
+        @test_throws ArgumentError ModelSettings(; spore_exponent = 0.5, saturation_sharpness = 2.0)
+        # The field follows the power law of the diffused load: with a = 1, F is the load itself,
+        # and it exceeds S where the hard cap would bind.
+        θ = [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]
+        prob = AshDiebackProblem(DATA, θ; settings = ModelSettings(; final_year = 2012))
+        hard = solve(prob).fungi
+        free = solve(remake(prob; settings = ModelSettings(; final_year = 2012, spore_exponent = 1.0))).fungi
+        @test free[:, :, 1:2] == hard[:, :, 1:2]
+        @test all(free[:, :, 3] .>= hard[:, :, 3])
+        @test maximum(free[:, :, 3]) > S
+        below = hard[:, :, 3] .< S
+        @test free[:, :, 3][below] == hard[:, :, 3][below]
+        @test isfinite(loglikelihood(AshDiebackProblem(DATA, [1000.0, 0.0, 23.26, 0.0, 18.51, 2.0, 21.50001, 1.0, 0.00855, 0.056];
+                                                       settings = ModelSettings(; spore_exponent = 0.5))))
+    end
+
+    @testset "broken power law above the cap" begin
+        S = 92.0
+        resp(w, b) = AshDieback.rachis_response(w, S, ModelSettings(; cap_exponent = b))
+        ws = [0.0, 1e-120, 1.0, 50.0, 92.0, 200.0, 1e4, 1e300]
+        @test resp.(ws, 0.0) == min.(ws, S)
+        for b in (0.1, 0.3, 0.5, 1.0)
+            F = resp.(ws, b)
+            @test F[1:5] == ws[1:5]                  # untouched up to the cap
+            @test issorted(F) && all(isfinite, F) && all(F .<= ws)
+            @test F[6] > S
+        end
+        @test resp(4S, 0.5) ≈ 2S
+        @test resp(200.0, 1.0) == 200.0
+        @test resp(200.0, 0.3) ≈ S * (200.0 / S)^0.3
+        @test_throws ArgumentError ModelSettings(; cap_exponent = -0.1)
+        @test_throws ArgumentError ModelSettings(; cap_exponent = 1.5)
+        @test_throws ArgumentError ModelSettings(; cap_exponent = 0.3, saturation_sharpness = 2.0)
+        @test_throws ArgumentError ModelSettings(; cap_exponent = 0.3, spore_exponent = 0.5)
+        θ = [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]
+        prob = AshDiebackProblem(DATA, θ)
+        @test loglikelihood(remake(prob; settings = ModelSettings(; cap_exponent = 0.0))) == loglikelihood(prob)
+        hard = solve(prob).fungi
+        broken = solve(remake(prob; settings = ModelSettings(; cap_exponent = 0.3))).fungi
+        # the same imputed years; from the same rachis, the first simulated year differs only above the cap
+        @test broken[:, :, 1:2] == hard[:, :, 1:2]
+        above = hard[:, :, 3] .== S
+        @test any(above)
+        @test broken[:, :, 3][.!above] == hard[:, :, 3][.!above]
+        @test all(broken[:, :, 3][above] .> S)
+        @test sum(broken) > sum(hard)
+        @test abs(loglikelihood(remake(prob; settings = ModelSettings(; cap_exponent = 0.3))) - loglikelihood(prob)) > 1
+    end
+
     @testset "recovery with summer heat" begin
         @test persistence(0.95, 30.0, 21.5, 0.0) === 0.95
         @test persistence(0.95, 0.0, 21.5, 0.7) == 0.95

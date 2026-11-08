@@ -17,6 +17,7 @@ Simon Frost
 - [Recovery](#recovery)
   - [Recovery after hot summers](#recovery-after-hot-summers)
 - [A softer cap](#a-softer-cap)
+  - [Power laws](#power-laws)
 - [Clearing litter in one stand](#clearing-litter-in-one-stand)
 - [Warming](#warming)
 - [The French parameters](#the-french-parameters)
@@ -245,7 +246,8 @@ function outcome_rows(sol, years, B)
 end
 
 function run_case(c)
-    settings = ModelSettings(; initialization_year = c.init, final_year = maximum(c.years), delta_t = 1.0, saturation_sharpness = c.n)
+    settings = ModelSettings(; initialization_year = c.init, final_year = maximum(c.years), delta_t = 1.0, saturation_sharpness = c.n,
+                             cap_exponent = c.b)
     sc = SCENARIOS[c.scenario]
     prob = AshDiebackProblem(c.data, c.θ; settings)
     return outcome_rows(solve(HostProblem(prob, host_for(c.ρ, c.μ, sc); interventions = sc.ivs)), c.years, c.B)
@@ -254,8 +256,8 @@ end
 const THETA = [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.05, 0.056]
 const DATA15 = prob0.data
 const DEFAULT_YEARS = (2026, 2050, 2075)
-case(labels, scenario; data = DATA15, B = 15.0, θ = THETA, ρ = 0.03, μ = 0.04, years = DEFAULT_YEARS, init = 2014, n = Inf) =
-    (; labels, scenario, data, B, θ, ρ, μ, years, init, n)
+case(labels, scenario; data = DATA15, B = 15.0, θ = THETA, ρ = 0.03, μ = 0.04, years = DEFAULT_YEARS, init = 2014, n = Inf, b = 0.0) =
+    (; labels, scenario, data, B, θ, ρ, μ, years, init, n, b)
 
 "Run the cases not yet in results/name.csv, then return the rows of all the cases."
 function sweep(name, cases)
@@ -977,14 +979,14 @@ and κ are refitted to France at each h, one refit after another:
 
 ``` julia
 "Refit β₀, D, S, C_init and κ to France under `settings`, with C_pers = 1; return them, the loss and the dispersion."
-function refit_france(settings)
+function refit_france(settings; starts = [log.([23.26 * fb, 18.51, 92.0 * fs, 0.00855, 0.056]) for fb in (1.0, 1.5, 2.5) for fs in (1.0, 1.5, 2.5, 4.0)])
     base = load_peoc_data()
+    # the reference is the paper's model, with the hard cap and no heat recovery, at θmax
     ref = loglikelihood(AshDiebackProblem(base, [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]))
     nll(x) = begin  # x = log(β₀, D, S, C_init, κ)
         v = loglikelihood(AshDiebackProblem(base, θ_rec(x, 1.0); settings))
         isfinite(v) ? -v : 1e12
     end
-    starts = [log.([23.26 * fb, 18.51, 92.0 * fs, 0.00855, 0.056]) for fb in (1.0, 1.5, 2.5) for fs in (1.0, 1.5, 2.5, 4.0)]
     x0 = starts[argmin(nll.(starts))]
     x, _ = nelder_mead(nll, x0; maxeval = 400)
     x, _ = nelder_mead(nll, x; step = 0.05, maxeval = 250)
@@ -993,13 +995,13 @@ function refit_france(settings)
 end
 
 "Refit at each key not yet in results/name.csv, one after another, and return all the rows."
-function refits_for(name, columns, keys, settings_of)
+function refits_for(name, columns, keys, settings_of; kw...)
     path = joinpath(RESULTS, name * ".csv")
     isfile(path) || write(path, join(vcat(columns, ["beta_0", "D", "S", "C_init", "kappa", "loss", "pearson", "deviance", "cells"]), ",") * "\n")
     done = Set(Tuple(r[c] for c in columns) for r in eachrow(CSV.read(path, DataFrame)))
     for k in keys
         k in done && continue
-        open(io -> write(io, join((k..., refit_france(settings_of(k...))...), ",") * "\n"), path, "a")
+        open(io -> write(io, join((k..., refit_france(settings_of(k...); kw...)...), ",") * "\n"), path, "a")
     end
     return CSV.read(path, DataFrame)
 end
@@ -1159,6 +1161,95 @@ healthy without intervention, and so trims the gains of vaccines,
 planting and 95 % litter clearing by a few points. Felling and partial
 litter clearing gain more, because below the cap every spore removed
 counts, but they peak at 0.076 and 0.064, still far below the rest.
+
+### Power laws
+
+Two more shapes show what the data want from the cap. A pure power law,
+F = S (w/S)ᵃ (`spore_exponent = a`), has no cap, but with a \< 1 it also
+raises loads far below S. A broken power law, F = w up to S and S (w/S)ᵇ
+above it (`cap_exponent = b`), keeps the paper’s response below S and
+lets F go on rising above it: b = 0 is the hard cap and b = 1 no cap.
+Each is refitted as above. The pure power law starts from a wider scan,
+as its scale is set by S and β₀ together:
+
+``` julia
+const AS, BEXPS = (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0), (0.0, 0.1, 0.2, 0.3, 0.5, 0.7)
+power_starts = [log.([23.26 * fb, 18.51 * fd, 92.0 * fs, 0.00855, 0.056]) for fb in (0.5, 1.0, 2.0, 4.0) for fd in (0.5, 1.0)
+                for fs in (0.003, 0.01, 0.03, 0.1, 0.3, 1.0)]
+broken_starts = [log.([23.26 * fb, 18.51, 92.0 * fs, 0.00855, 0.056]) for fb in (1.0, 1.5, 2.5) for fs in (0.25, 0.5, 1.0, 1.5, 2.5)]
+power = sort(refits_for("power_refits", ["a"], [(a,) for a in AS], a -> ModelSettings(; spore_exponent = a); starts = power_starts), :a)
+broken = sort(refits_for("broken_refits", ["b"], [(b,) for b in BEXPS], b -> ModelSettings(; cap_exponent = b); starts = broken_starts), :b)
+broken_row(b) = broken[findfirst(==(b), broken.b), :]
+gained(r) = r.loss > 1e11 ? -Inf : -r.loss
+nothing
+```
+
+``` julia
+shape_row(form, x, r) = [form, x, (r.loss > 1e11 ? ("–", "–", "–", "–", "zero likelihood", "–", "–") :
+    (fmt(r.beta_0, 1), fmt(r.D, 1), fmt(r.S, 1), fmt(r.kappa), fmt(-r.loss, 1), fmt(-r.loss / PHI_REC, 1), fmt(r.pearson, 1)))...]
+md_table(["Form", "Exponent", "β₀", "D", "S", "κ", "Log-likelihood gained", "Gained / φ", "Pearson / df"],
+         vcat([shape_row("pure power, a", r.a, r) for r in eachrow(power)], [shape_row("broken power, b", r.b, r) for r in eachrow(broken)]))
+```
+
+| Form | Exponent | β₀ | D | S | κ | Log-likelihood gained | Gained / φ | Pearson / df |
+|----|----|----|----|----|----|----|----|----|
+| pure power, a | 0.2 | 38.4 | 4.1 | 28.4 | 0.210 | -3604.8 | -180.2 | 21.3 |
+| pure power, a | 0.3 | 11.8 | 8.9 | 31.6 | 0.144 | -2146.6 | -107.3 | 20.5 |
+| pure power, a | 0.4 | 64.5 | 14.9 | 7.8 | 0.089 | -841.5 | -42.1 | 20.6 |
+| pure power, a | 0.5 | 20.3 | 26.1 | 8.8 | 0.057 | 14.5 | 0.7 | 21.9 |
+| pure power, a | 0.6 | 8.1 | 52.0 | 11.2 | 0.050 | 95.4 | 4.8 | 23.9 |
+| pure power, a | 0.7 | 26.0 | 118.1 | 0.2 | 0.088 | -356.4 | -17.8 | 23.9 |
+| pure power, a | 0.8 | – | – | – | – | zero likelihood | – | – |
+| pure power, a | 1.0 | – | – | – | – | zero likelihood | – | – |
+| broken power, b | 0.0 | 23.2 | 18.5 | 92.0 | 0.056 | 0.0 | 0.0 | 20.2 |
+| broken power, b | 0.1 | 37.7 | 14.3 | 68.0 | 0.042 | 393.4 | 19.7 | 19.7 |
+| broken power, b | 0.2 | 50.7 | 13.2 | 43.2 | 0.030 | 746.0 | 37.3 | 19.5 |
+| broken power, b | 0.3 | 58.0 | 13.7 | 24.0 | 0.021 | 990.1 | 49.5 | 20.5 |
+| broken power, b | 0.5 | 25.4 | 30.1 | 8.0 | 0.016 | 784.4 | 39.2 | 23.4 |
+| broken power, b | 0.7 | – | – | – | – | zero likelihood | – | – |
+
+**France rejects the pure power law, but fits the broken one as well as
+the softest cap.** The pure power law gains at most 95, at a = 0.6, and
+is worse than the hard cap at the other exponents but one: raising loads
+far below S puts symptoms far ahead of the front. The broken power law
+gains 990 at b = 0.3, against 964 for the soft cap at n = 0.25, a gap
+well within 1.92 φ. At b = 0 it gives back the paper’s fit. So France
+wants F to follow w at low loads and to go on rising slowly above S, and
+it can’t tell a soft cap from a broken power law. On Great Britain:
+
+``` julia
+const GB_BS = (0.1, 0.2, 0.3, 0.5)
+broken_runs = sweep("broken", [case((; cap = "b=$b"), name; θ = θ_fit(broken_row(b)), b) for b in GB_BS for name in soft_names])
+bkg, bkv = lookups(broken_runs).gain, lookups(broken_runs).value
+nrow(broken_runs)
+```
+
+    108
+
+``` julia
+md_table(["Healthy adults, 2075", "Hard cap", ("b = $b" for b in GB_BS)...],
+         vcat([["Baseline", fmt(cv("n=Inf", "baseline")), (fmt(bkv("b=$b", "baseline")) for b in GB_BS)...]],
+              [[name, fmt(cg("n=Inf", name)), (fmt(bkg("b=$b", name)) for b in GB_BS)...] for name in soft_names[3:end]]))
+```
+
+| Healthy adults, 2075            | Hard cap | b = 0.1 | b = 0.2 | b = 0.3 | b = 0.5 |
+|---------------------------------|----------|---------|---------|---------|---------|
+| Baseline                        | 0.062    | 0.063   | 0.073   | 0.088   | 0.173   |
+| central vaccine from 2027       | 0.083    | 0.085   | 0.087   | 0.088   | 0.089   |
+| perfect vaccine from 2027       | 0.448    | 0.449   | 0.448   | 0.439   | 0.421   |
+| plant s 0.2, 2.0 %/y from 2027  | 0.328    | 0.329   | 0.325   | 0.315   | 0.278   |
+| plant s 0.05, 2.0 %/y from 2027 | 0.477    | 0.476   | 0.469   | 0.456   | 0.390   |
+| fell 50 %                       | 0.041    | 0.005   | 0.004   | 0.018   | 0.073   |
+| clear 50 % of litter            | 0.015    | 0.013   | 0.022   | 0.035   | 0.103   |
+| clear 95 % of litter            | 0.400    | 0.356   | 0.316   | 0.314   | 0.386   |
+
+**Above the cap, how far F still rises decides 95 % litter clearing.**
+At the best fit, b = 0.3, clearing 95 % gains 0.314 against 0.400 under
+the hard cap, level with s 0.2 planting (0.315) rather than above it,
+because the 5 % left still keeps most loads above S, where F still
+rises. Vaccines and planting move little, and felling gains 0.018. At b
+= 0.5, which France fits less well, a perfect vaccine (0.421) passes
+very tolerant planting (0.390).
 
 ## Clearing litter in one stand
 
@@ -1483,7 +1574,8 @@ rows_m = [("Regeneration and tree death", extrema(gg(ρ, μ, CENTRAL_V) for (ρ,
           ("Margin over the cap (k 1–5)", extrema(mg("k=$k", CENTRAL_V) for k in KS), extrema(mg("k=$k", PLANT) for k in KS)),
           ("Warming to 2075", extrema(wg(s, m, CENTRAL_V) for (s, m) in climates), extrema(wg(s, m, PLANT) for (s, m) in climates)),
           ("Recovery (C_pers 0.98–1)", extrema(rg("C=$C", CENTRAL_V) for C in (1.0, 0.98)), extrema(rg("C=$C", PLANT) for C in (1.0, 0.98))),
-          ("Shape of the cap (n 0.25–∞)", extrema(cg("n=$n", CENTRAL_V) for n in GB_NS), extrema(cg("n=$n", PLANT) for n in GB_NS)),
+          ("Shape of the cap (soft or broken)", extrema(vcat([cg("n=$n", CENTRAL_V) for n in GB_NS], [bkg("b=$b", CENTRAL_V) for b in GB_BS])),
+           extrema(vcat([cg("n=$n", PLANT) for n in GB_NS], [bkg("b=$b", PLANT) for b in GB_BS]))),
           ("French parameters, φ = 20", interval(over(pl75.gain, "phi20", 15, CENTRAL_V)), interval(over(pl75.gain, "phi20", 15, PLANT)))]
 fig_m = plot(; yticks = (1:length(rows_m), reverse(first.(rows_m))), xlims = (0, 0.42), xlabel = "Gain in healthy adults in 2075 (share of today's ash)",
              legend = :outertop, legendcolumns = 2, size = (950, 520), left_margin = 4Plots.mm, bottom_margin = 4Plots.mm, grid = :x)
@@ -1494,24 +1586,24 @@ end
 fig_m
 ```
 
-![](06_interventions_gb_files/figure-commonmark/cell-48-output-1.svg)
+![](06_interventions_gb_files/figure-commonmark/cell-52-output-1.svg)
 
 ``` julia
 md_table(["Unknown", "Central vaccine", "Tolerant planting (s 0.2)"], [[r[1], txt(r[2]), txt(r[3])] for r in rows_m])
 ```
 
-| Unknown                     | Central vaccine | Tolerant planting (s 0.2) |
-|-----------------------------|-----------------|---------------------------|
-| Regeneration and tree death | 0.027–0.120     | 0.189–0.377               |
-| Start and rate              | 0.056–0.083     | 0.047–0.328               |
-| Horizon (2050, 2075, 2100)  | 0.062–0.092     | 0.160–0.328               |
-| Share symptomatic in 2026   | 0.029–0.116     | 0.231–0.339               |
-| Stand basal area (B 5–35)   | 0.077–0.083     | 0.295–0.333               |
-| Margin over the cap (k 1–5) | 0.072–0.083     | 0.283–0.331               |
-| Warming to 2075             | 0.083–0.092     | 0.328–0.357               |
-| Recovery (C_pers 0.98–1)    | 0.083–0.091     | 0.328–0.346               |
-| Shape of the cap (n 0.25–∞) | 0.077–0.083     | 0.294–0.328               |
-| French parameters, φ = 20   | 0.076–0.089     | 0.317–0.339               |
+| Unknown | Central vaccine | Tolerant planting (s 0.2) |
+|----|----|----|
+| Regeneration and tree death | 0.027–0.120 | 0.189–0.377 |
+| Start and rate | 0.056–0.083 | 0.047–0.328 |
+| Horizon (2050, 2075, 2100) | 0.062–0.092 | 0.160–0.328 |
+| Share symptomatic in 2026 | 0.029–0.116 | 0.231–0.339 |
+| Stand basal area (B 5–35) | 0.077–0.083 | 0.295–0.333 |
+| Margin over the cap (k 1–5) | 0.072–0.083 | 0.283–0.331 |
+| Warming to 2075 | 0.083–0.092 | 0.328–0.357 |
+| Recovery (C_pers 0.98–1) | 0.083–0.091 | 0.328–0.346 |
+| Shape of the cap (soft or broken) | 0.077–0.089 | 0.278–0.329 |
+| French parameters, φ = 20 | 0.076–0.089 | 0.317–0.339 |
 
 Quality of the product, in the section above, moves them as far again,
 and it is set by the input chosen. Regeneration and tree death, the
@@ -1547,11 +1639,13 @@ the margin.
   = 15. Recovery doesn’t explain Kent’s fall, whether steady or after
   hot summers, of which France allows at most about 5 % in a summer at
   γ.
-- **France prefers a softer spore cap than the paper’s, but the ranking
-  holds.** The fit improves steadily as the cap softens, by 964 in
-  log-likelihood at n = 0.25. That raises the baseline in 2075 from 0.06
-  to 0.10 and trims the main gains, for example s 0.2 planting from 0.33
-  to 0.29.
+- **France prefers a softer spore cap than the paper’s, and the ranking
+  mostly holds.** The fit improves steadily as the cap softens, by 964
+  in log-likelihood at n = 0.25, and by as much with a broken power law
+  that keeps rising above S (990 at b = 0.3). A soft cap raises the
+  baseline in 2075 from 0.06 to 0.10 and trims the main gains, for
+  example s 0.2 planting from 0.33 to 0.29. Under the broken power law,
+  clearing 95 % of litter falls to 0.31, level with that planting.
 - **Felling and clearing part of the litter do little for healthy
   trees.** Felling half of symptomatic adults a year gains 0.03 healthy
   adults and changes all adults by -0.16. Clearing 50 % of litter gains
@@ -1604,9 +1698,12 @@ These are ordered by how much they could change the ranking above.
   the stand’s own host, and its share of its own spores rests on kernels
   measured elsewhere.
 - **The cap’s shape is open.** The sweeps use the paper’s hard cap,
-  which France fits worse than softer ones. The ranking holds across the
-  shapes tried, but felling and partial litter clearing gain more under
-  a soft cap, while staying small.
+  which France fits worse than a soft cap or a broken power law, and it
+  can’t choose between those two. The ranking mostly holds across the
+  shapes tried, but 95 % litter clearing falls to the level of s 0.2
+  planting under the best broken power law, a perfect vaccine passes
+  very tolerant planting at b = 0.5, and felling and partial clearing
+  gain more under a soft cap, while staying small.
 - **No costs.** Areas treated are not costs, and a hectare planted
   differs from a hectare vaccinated. Felling’s reasons of safety and
   amenity are outside the measure.

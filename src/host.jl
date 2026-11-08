@@ -265,8 +265,8 @@ The result of `solve(::HostProblem)`.
 Fields, with the host in the units of `ash_density` and years given by [`host_years`](@ref):
 - `fungi`: colonised rachis per ash F, size `(nx, ny, years - 1)`, for the
   [`simulated_years`](@ref). F of year a drives the symptoms of year a + 1.
-- `spore_load`: the diffused spore load w before the cap, F = [`saturate`](@ref)(w, S), of the
-  same size; `NaN` in the two imputed years. w / S is how far a quadrat is above the cap.
+- `spore_load`: the diffused spore load w before the cap, F = [`saturate`](@ref)(w, S) (or the
+  power law of `spore_exponent` in [`ModelSettings`](@ref)), of the same size; `NaN` in the two imputed years. w / S is how far a quadrat is above the cap.
 - `healthy`, `symptomatic`: adults, size `(nx, ny, classes, years)`.
 - `juvenile_healthy`, `juvenile_symptomatic`: juveniles, of the same size.
 - `disease_deaths`: cumulative area killed by the disease, size `(nx, ny, years)`.
@@ -487,7 +487,7 @@ function CommonSolve.solve(hp::HostProblem, alg::AbstractDiffusionAlgorithm = Sp
             end
             w = diffuse(op, vec(spores), prob.scheme)
             W[:, :, l] .= reshape(w, nx, ny)
-            F[:, :, l] .= saturate.(view(W, :, :, l), θ.S_sat, s.saturation_sharpness)
+            F[:, :, l] .= rachis_response.(view(W, :, :, l), θ.S_sat, Ref(s))
         end
         dead[:, :, l + 1] .= view(dead, :, :, l)
         for j in 1:ny, i in 1:nx

@@ -15,6 +15,14 @@ Settings of the model that are not estimated (PEOC's `parameters_of_the_model.py
   `false` reproduces PEOC.
 - `saturation_sharpness`: the sharpness n of the cap on the diffused spore load w; see
   [`saturate`](@ref). `Inf`, the default, is the paper's hard cap min(w, S).
+- `spore_exponent`: `nothing`, the default, uses the cap. A number a > 0 replaces the cap with
+  the power law F = S (w/S)ᵃ, which has no maximum; S is then the load at which F = w. Below
+  S, a < 1 raises F above w, so loads far below S grow faster than in the paper. It needs
+  `saturation_sharpness = Inf`.
+- `cap_exponent`: the exponent b of a broken power law, F = w up to S and S (w/S)ᵇ above it,
+  for 0 ≤ b ≤ 1. `0`, the default, is the paper's hard cap, and 1 removes the cap. Above S,
+  removing spores still lowers F when b > 0. It needs `saturation_sharpness = Inf` and
+  `spore_exponent = nothing`.
 - `heat_recovery`, `heat_recovery_lag`: recovery that rises with summer heat; see
   [`persistence`](@ref). `heat_recovery = 0`, the default, is the paper's constant C_pers.
   The lag is 1 for the summer before the year scored (the summer that drives its new
@@ -28,19 +36,29 @@ Base.@kwdef struct ModelSettings
     diffusion_period::Float64 = 60.0
     cap_symptom_probability::Bool = false
     saturation_sharpness::Float64 = Inf
+    spore_exponent::Union{Nothing,Float64} = nothing
+    cap_exponent::Float64 = 0.0
     heat_recovery::Float64 = 0.0
     heat_recovery_lag::Int = 1
     function ModelSettings(initialization_year, final_year, observed_trees, delta_t, diffusion_period,
-                           cap_symptom_probability, saturation_sharpness, heat_recovery,
-                           heat_recovery_lag)
+                           cap_symptom_probability, saturation_sharpness, spore_exponent, cap_exponent,
+                           heat_recovery, heat_recovery_lag)
+        0 <= cap_exponent <= 1 || throw(ArgumentError("cap_exponent must be in [0, 1], got $cap_exponent"))
+        cap_exponent == 0 || (isinf(saturation_sharpness) && spore_exponent === nothing) ||
+            throw(ArgumentError("cap_exponent replaces the cap, so it needs saturation_sharpness = Inf and spore_exponent = nothing"))
         saturation_sharpness > 0 ||
             throw(ArgumentError("saturation_sharpness must be positive, got $saturation_sharpness"))
+        spore_exponent === nothing || (spore_exponent > 0 && isfinite(spore_exponent)) ||
+            throw(ArgumentError("spore_exponent must be nothing or a positive number, got $spore_exponent"))
+        spore_exponent === nothing || isinf(saturation_sharpness) ||
+            throw(ArgumentError("spore_exponent replaces the cap, so saturation_sharpness must be Inf, got $saturation_sharpness"))
         0 <= heat_recovery <= 1 ||
             throw(ArgumentError("heat_recovery must be in [0, 1], got $heat_recovery"))
         heat_recovery_lag in (0, 1) ||
             throw(ArgumentError("heat_recovery_lag must be 0 or 1, got $heat_recovery_lag"))
         return new(initialization_year, final_year, observed_trees, delta_t, diffusion_period,
-                   cap_symptom_probability, saturation_sharpness, heat_recovery, heat_recovery_lag)
+                   cap_symptom_probability, saturation_sharpness, spore_exponent, cap_exponent,
+                   heat_recovery, heat_recovery_lag)
     end
 end
 
@@ -68,6 +86,19 @@ function saturate(w::Real, S::Real, n::Real = Inf)
     isinf(n) && return min(w, S)
     x = w / S
     return x <= 1 ? w / (1 + abs(x)^n)^(1 / n) : S / (1 + x^(-n))^(1 / n)
+end
+
+# F from the diffused load w under the settings: the cap (saturate), the power law S (w/S)^a, or
+# the broken power law, w up to S and S (w/S)^b above.
+function rachis_response(w::Real, S::Real, s::ModelSettings)
+    a, b = s.spore_exponent, s.cap_exponent
+    if a !== nothing
+        return a == 1 ? max(w, zero(w)) : S * (max(w, zero(w)) / S)^a
+    elseif b == 0 || w <= S
+        return saturate(w, S, s.saturation_sharpness)
+    else
+        return b == 1 ? w : S * (w / S)^b
+    end
 end
 
 """
@@ -226,7 +257,7 @@ end
 Simulate the model: impute the first two years, then for each later year produce spores
 from the rachis of the two previous years (with the Allee effect and rainfall), diffuse
 them with `alg` (an [`AbstractDiffusionAlgorithm`](@ref)) and saturate them at `S_sat` (see
-[`saturate`](@ref));
+[`saturate`](@ref), and `spore_exponent` in [`ModelSettings`](@ref) for a power law instead);
 finally compute the probability of symptoms for each survey year.
 """
 function CommonSolve.solve(prob::AshDiebackProblem,
@@ -249,7 +280,7 @@ function CommonSolve.solve(prob::AshDiebackProblem,
             spores .*= θ.beta_0
         end
         w = diffuse(op, vec(spores), prob.scheme)
-        F[:, :, a] .= saturate.(reshape(w, nx, ny), θ.S_sat, s.saturation_sharpness)
+        F[:, :, a] .= rachis_response.(reshape(w, nx, ny), θ.S_sat, Ref(s))
     end
     return AshDiebackSolution(F, symptom_probability(prob, F), prob, alg)
 end
