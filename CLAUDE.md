@@ -80,7 +80,9 @@ throughput is one every 0.15–0.2 s. The dense reference takes about a minute.
 threads) into the git-ignored `runs/`, with a checkpoint after every iteration, and resumes from
 it. `scripts/summarise_amis.jl` compares a run with the paper. `run_amis.jl`'s fifth argument sets
 `delta_t` for a fast run (15 iterations of 1000 at Δt = 1 takes minutes; see vignette 4), and
-`scripts/compare_amis.jl` compares one with a reference run. `scripts/check_amis_weights.jl` shows how much a run's largest weights matter: one draw took the reference run's ESS from 252 781 to 26 457, so ESS alone does not measure precision here. Do not change `AMISResult` while a
+`scripts/compare_amis.jl` compares one with a reference run. Its sixth argument is the broken cap's
+`cap_exponent` (held fixed), and the five after that centre the first proposal (β₀ D S C_init κ),
+which a nonzero exponent needs, as its posterior is far from the paper's. `scripts/check_amis_weights.jl` shows how much a run's largest weights matter: one draw took the reference run's ESS from 252 781 to 26 457, so ESS alone does not measure precision here. Do not change `AMISResult` while a
 run depends on its checkpoint: it is a `Serialization` file.
 
 ## Files not to edit by hand

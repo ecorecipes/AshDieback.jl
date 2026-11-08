@@ -21,6 +21,7 @@ Simon Frost
 - [Clearing litter in one stand](#clearing-litter-in-one-stand)
 - [Warming](#warming)
 - [The French parameters](#the-french-parameters)
+  - [Under the broken cap](#under-the-broken-cap)
 - [What changes the result](#what-changes-the-result)
 - [Summary](#summary)
   - [What field data would help most](#what-field-data-would-help-most)
@@ -607,10 +608,11 @@ kent_years = 2017:2024
 @assert kent_mean.year == collect(kent_years)
 survey_mean = kent_mean.mean_share
 
-function kent_model(rs; theta = theta_rate(rs), h = 0.0, lag = 1)
+function kent_model(rs; theta = theta_rate(rs), h = 0.0, lag = 1, b = 0.0)
     prob, _ = gb_problem(inputs; B = 15.0, theta, final_year = 2030)
-    h == 0 || (prob = AshDiebackProblem(prob.data, theta; settings = ModelSettings(; initialization_year = 2014, final_year = 2030,
-                                                                                    delta_t = 1.0, heat_recovery = h, heat_recovery_lag = lag)))
+    h == 0 && b == 0 ||
+        (prob = AshDiebackProblem(prob.data, theta; settings = ModelSettings(; initialization_year = 2014, final_year = 2030, delta_t = 1.0,
+                                                                              heat_recovery = h, heat_recovery_lag = lag, cap_exponent = b)))
     sol = solve(HostProblem(prob, host_for(0.03, 0.04, SCENARIOS["baseline"])))
     ys = host_years(sol)
     cells = [cell(r.easting_km, r.northing_km) for r in eachrow(kent)]
@@ -1559,6 +1561,181 @@ Vaccine and planting gains barely move, even allowing for φ = 20.
 Measures near a threshold do, because they work only if they bring
 spores below the cap, which depends on β₀ and D.
 
+### Under the broken cap
+
+France fits the broken power law at b = 0.3 much better than the hard
+cap (see “Power laws” above), with parameters far from the paper’s. So
+the same two sets of draws are made under it, with b held at 0.3. Twenty
+come from a fast AMIS run (15 rounds of 1000 at Δt = 1, as in vignette
+4, started at the b = 0.3 refit) and sixty from prior × L^(1/20), by
+vignette 5’s sampler. The draws are cached in
+`results/broken_draws.csv`, and `scripts/run_amis.jl` makes the same
+AMIS run with `cap_exponent` as its sixth argument:
+
+``` julia
+const NU, B_POST = 7, 0.3
+mean_cov(Z, w) = (m = Z * w; (m, Symmetric(((Z .- m) .* w') * (Z .- m)')))
+normalise(lw) = (v = exp.(lw .- maximum(lw)); v ./ sum(v))
+systematic(rng, w, n) = (c = cumsum(w); u0 = rand(rng) / n; [min(searchsortedfirst(c, u0 + (i - 1) / n), length(w)) for i in 1:n])
+
+"Vignette 5's tempered importance sampler: prior × L^(1/φ), with a Student-t proposal on log-parameters."
+function tempered_round(rng, post, m, C, n; φ = PHI_REC)
+    L = cholesky(C).L
+    d = length(m)
+    logdetL = sum(log(L[i, i]) for i in 1:d)
+    Z, lq = zeros(d, n), zeros(n)
+    for i in 1:n
+        z = m .+ sqrt(NU / sum(abs2, randn(rng, NU))) .* (L * randn(rng, d))
+        Z[:, i] = z
+        lq[i] = -0.5 * (NU + d) * log1p(sum(abs2, L \ (z .- m)) / NU) - logdetL
+    end
+    ll, lp = fill(-Inf, n), fill(-Inf, n)
+    Threads.@threads :dynamic for i in 1:n
+        x = exp.(Z[:, i])
+        p = logprior(post, x)
+        if isfinite(p)
+            lp[i] = p
+            ll[i] = loglikelihood(remake(post.problem; p = full_parameters(post, x)))
+        end
+    end
+    lw = [isfinite(ll[i]) ? ll[i] / φ + lp[i] + sum(view(Z, :, i)) - lq[i] : -Inf for i in 1:n]
+    return (; Z, lw, ll, lp)
+end
+
+const BPARAMS = [:beta_0, :D, :S_sat, :C_init, :kappa]
+broken_draws = let path = joinpath(RESULTS, "broken_draws.csv")
+    if !isfile(path)
+        r = broken_row(B_POST)
+        θ0 = [1000.0, 0.0, r.beta_0, 0.0, r.D, r.S, 21.50001, 1.0, r.C_init, r.kappa]
+        post_b = AshDiebackPosterior(AshDiebackProblem(load_peoc_data(), θ0; settings = ModelSettings(; delta_t = 1.0, cap_exponent = B_POST)),
+                                     reduced_model_prior_ranges())
+        start = AMISResult(Matrix{Float64}[], Vector{Float64}[], Vector{Float64}[], [θ0[post_b.free]],
+                           [Matrix(Diagonal([3.0, 0.4, 1.0, 1e-8, 1.5e-5]))])
+        X, ld, w = amis_draws(amis(Xoshiro(1), post_b, start; iterations = 15, samples = 1000, threaded = true))
+        rng = Xoshiro(20261108)
+        i1 = systematic(rng, w, 20)
+        pos = w .> 0  # draws outside the prior, some negative, have weight 0
+        m1, C1 = mean_cov(log.(X[:, pos]), w[pos] ./ sum(w[pos]))
+        round1 = tempered_round(rng, post_b, m1, Symmetric(PHI_REC .* Matrix(C1)), 1500)
+        m2, C2 = mean_cov(round1.Z, normalise(round1.lw))
+        round2 = tempered_round(rng, post_b, m2, Symmetric(1.2 .* Matrix(C2)), 3000)
+        i20 = systematic(rng, normalise(round2.lw), 60)
+        d1 = insertcols!(DataFrame(permutedims(X[:, i1]), BPARAMS), 1, :set => "phi1", :draw => 1:20)
+        d1.logdensity = ld[i1]
+        d20 = insertcols!(DataFrame(permutedims(exp.(round2.Z[:, i20])), BPARAMS), 1, :set => "phi20", :draw => 1:60)
+        d20.logdensity = round2.ll[i20] .+ round2.lp[i20]
+        CSV.write(path, vcat(d1, d20))
+    end
+    CSV.read(path, DataFrame; stringtype = String)
+end
+range_of(v, d) = string(fmt(minimum(v), d), " – ", fmt(maximum(v), d))
+```
+
+    range_of (generic function with 1 method)
+
+``` julia
+md_table(["Set", "Draws", "β₀", "D", "S", "κ"],
+         vcat([[string(g.set[1], ", hard cap"), nrow(g), range_of(g.beta_0, 1), range_of(g.D, 1), range_of(g.S_sat, 1), range_of(g.kappa, 3)]
+               for g in groupby(draws, :set)],
+              [[string(g.set[1], ", b = 0.3"), nrow(g), range_of(g.beta_0, 1), range_of(g.D, 1), range_of(g.S_sat, 1), range_of(g.kappa, 3)]
+               for g in groupby(broken_draws, :set)]))
+```
+
+| Set             | Draws | β₀           | D           | S            | κ             |
+|-----------------|-------|--------------|-------------|--------------|---------------|
+| phi1, hard cap  | 20    | 21.2 – 25.4  | 17.4 – 19.4 | 90.5 – 94.1  | 0.037 – 0.072 |
+| phi20, hard cap | 60    | 13.0 – 52.7  | 12.1 – 27.0 | 81.9 – 104.7 | 0.001 – 0.198 |
+| phi1, b = 0.3   | 20    | 53.5 – 65.7  | 12.9 – 14.3 | 22.8 – 24.9  | 0.002 – 0.035 |
+| phi20, b = 0.3  | 60    | 26.6 – 406.3 | 6.6 – 19.3  | 11.1 – 34.0  | 0.001 – 0.154 |
+
+Each draw runs every scenario, as above:
+
+``` julia
+bpost_cases = [case((; set = r.set, draw = string(r.draw), B = string(Int(B)), beta_0 = @sprintf("%.6f", r.beta_0)), n;
+                    data = B == 15.0 ? DATA15 : data25, B, b = B_POST,
+                    θ = [1000.0, 0.0, r.beta_0, 0.0, r.D, r.S_sat, 21.50001, 1.0, 0.05, r.kappa])
+               for B in (15.0, 25.0) for r in eachrow(broken_draws) for n in post_names]
+bpost_runs = sweep("posterior_broken", bpost_cases)
+bl75 = lookups(bpost_runs)
+bdraw_table = [(r.set, string(r.draw), @sprintf("%.6f", r.beta_0)) for r in eachrow(broken_draws)]
+over_b(g, set, b, n) = [g(s, d, b, β, n) for (s, d, β) in bdraw_table if s == set]
+share_b(set, b, x, y) = mean(over_b(bl75.gain, set, b, x) .> over_b(bl75.gain, set, b, y))
+nrow(bpost_runs)
+```
+
+    6720
+
+``` julia
+md_table(["Gain in healthy adults, 2075, φ = 20", "Broken cap, B = 15", "Hard cap, B = 15", "Broken cap, B = 25", "Hard cap, B = 25"],
+         vcat([["Healthy adults without intervention", fmti(over_b(bl75.value, "phi20", 15, "baseline")), fmti(over(pl75.value, "phi20", 15, "baseline")),
+                fmti(over_b(bl75.value, "phi20", 25, "baseline")), fmti(over(pl75.value, "phi20", 25, "baseline"))]],
+              [[n, fmti(over_b(bl75.gain, "phi20", 15, n)), fmti(over(pl75.gain, "phi20", 15, n)), fmti(over_b(bl75.gain, "phi20", 25, n)),
+                fmti(over(pl75.gain, "phi20", 25, n))] for n in ranked]))
+md_table(["First beats second, share of φ = 20 draws", "Broken cap, B 15", "Hard cap, B 15", "Broken cap, B 25", "Hard cap, B 25"],
+         [[string(x, " > ", y), fmt(share_b("phi20", 15, x, y), 2), fmt(share_beating("phi20", 15, x, y), 2), fmt(share_b("phi20", 25, x, y), 2),
+           fmt(share_beating("phi20", 25, x, y), 2)] for (x, y) in pairs_p])
+```
+
+| Gain in healthy adults, 2075, φ = 20 | Broken cap, B = 15 | Hard cap, B = 15 | Broken cap, B = 25 | Hard cap, B = 25 |
+|----|----|----|----|----|
+| Healthy adults without intervention | 0.086 \[0.075, 0.098\] | 0.060 \[0.052, 0.070\] | 0.065 \[0.057, 0.074\] | 0.055 \[0.048, 0.062\] |
+| plant s 0.05, 2.0 %/y from 2027 | 0.457 \[0.450, 0.462\] | 0.478 \[0.472, 0.483\] | 0.465 \[0.462, 0.466\] | 0.482 \[0.479, 0.485\] |
+| perfect vaccine from 2027 | 0.436 \[0.420, 0.452\] | 0.448 \[0.430, 0.468\] | 0.399 \[0.380, 0.419\] | 0.449 \[0.433, 0.468\] |
+| clear 95 % of litter | 0.288 \[0.183, 0.383\] | 0.374 \[0.279, 0.414\] | 0.202 \[0.144, 0.308\] | 0.296 \[0.137, 0.390\] |
+| central vaccine + planting | 0.348 \[0.339, 0.355\] | 0.364 \[0.351, 0.377\] | 0.326 \[0.313, 0.339\] | 0.367 \[0.356, 0.379\] |
+| plant s 0.2, 2.0 %/y from 2027 | 0.314 \[0.308, 0.318\] | 0.328 \[0.317, 0.339\] | 0.299 \[0.289, 0.308\] | 0.331 \[0.322, 0.341\] |
+| 100 % vaccine from 2027 | 0.253 \[0.235, 0.271\] | 0.244 \[0.226, 0.266\] | 0.215 \[0.197, 0.235\] | 0.245 \[0.227, 0.267\] |
+| plant s 0.5, 2.0 %/y from 2027 | 0.156 \[0.146, 0.165\] | 0.164 \[0.152, 0.177\] | 0.135 \[0.124, 0.146\] | 0.166 \[0.155, 0.179\] |
+| central vaccine from 2027 | 0.086 \[0.081, 0.092\] | 0.082 \[0.076, 0.089\] | 0.074 \[0.067, 0.081\] | 0.083 \[0.077, 0.090\] |
+| plant ordinary, 2.0 %/y from 2027 | 0.079 \[0.071, 0.089\] | 0.071 \[0.063, 0.082\] | 0.063 \[0.055, 0.071\] | 0.072 \[0.064, 0.082\] |
+| fell 50 % | 0.018 \[0.014, 0.022\] | 0.034 \[-0.006, 0.092\] | 0.012 \[0.010, 0.015\] | 0.005 \[-0.016, 0.041\] |
+| clear 50 % of litter | 0.035 \[0.030, 0.040\] | 0.014 \[0.005, 0.035\] | 0.026 \[0.023, 0.030\] | 0.006 \[0.002, 0.013\] |
+
+| First beats second, share of φ = 20 draws | Broken cap, B 15 | Hard cap, B 15 | Broken cap, B 25 | Hard cap, B 25 |
+|----|----|----|----|----|
+| plant s 0.05, 2.0 %/y from 2027 \> perfect vaccine from 2027 | 0.97 | 1.00 | 1.00 | 1.00 |
+| perfect vaccine from 2027 \> clear 95 % of litter | 1.00 | 1.00 | 1.00 | 1.00 |
+| clear 95 % of litter \> plant s 0.2, 2.0 %/y from 2027 | 0.38 | 0.83 | 0.03 | 0.45 |
+| plant s 0.2, 2.0 %/y from 2027 \> 100 % vaccine from 2027 | 1.00 | 1.00 | 1.00 | 1.00 |
+| plant s 0.2, 2.0 %/y from 2027 \> central vaccine from 2027 | 1.00 | 1.00 | 1.00 | 1.00 |
+| plant s 0.5, 2.0 %/y from 2027 \> central vaccine from 2027 | 1.00 | 1.00 | 1.00 | 1.00 |
+| central vaccine from 2027 \> plant ordinary, 2.0 %/y from 2027 | 1.00 | 1.00 | 1.00 | 1.00 |
+| central vaccine from 2027 \> fell 50 % | 1.00 | 0.93 | 1.00 | 1.00 |
+| fell 50 % \> plant ordinary, 2.0 %/y from 2027 | 0.00 | 0.08 | 0.00 | 0.00 |
+| fell 50 % \> clear 50 % of litter | 0.00 | 0.77 | 0.00 | 0.38 |
+
+Allowing for φ = 20 widens this posterior a long way, mostly upward in
+β₀, as under the hard cap. Yet the mean GB gains from vaccines and
+planting move by at most 0.050 from the hard cap’s, and the pairs among
+them keep their order in at least 97 % of draws. Clearing 95 % of litter
+loses most: it beats s 0.2 planting in 38 % of these draws at B = 15 and
+3 % at B = 25, against 83 % and 45 % under the hard cap. Felling 50 %
+beats clearing 50 % in 0 % of draws at B = 15, against 77 % under the
+hard cap.
+
+Nor does the broken cap help with Kent. Its RMSE over 2019–2024 (with
+the dead, rate 9.2 %/y), at the b = 0.3 refit and over the φ = 20 draws
+of each cap:
+
+``` julia
+kent_draws(d, b) = (rows = filter(:set => ==("phi20"), d); out = Vector{Vector{Float64}}(undef, nrow(rows));
+                    Threads.@threads :dynamic for k in 1:nrow(rows)
+                        r = rows[k, :]
+                        out[k] = kent_model(1.0; theta = [1000.0, 0.0, r.beta_0, 0.0, r.D, r.S_sat, 21.50001, 1.0, 0.05, r.kappa], b)[2]
+                    end; out)
+kent_b_fit = kent_model(1.0; theta = θ_fit(broken_row(B_POST)), b = B_POST)[2]
+kent_hard_d, kent_b_d = kent_draws(draws, 0.0), kent_draws(broken_draws, B_POST)
+falls(v) = v[end] < v[end - 2]
+(; rmse_hard_best_fit = round(rms(central_dead); digits = 3), rmse_broken_refit = round(rms(kent_b_fit); digits = 3),
+ rmse_hard_phi20 = round.(extrema(rms.(kent_hard_d)); digits = 3), rmse_broken_phi20 = round.(extrema(rms.(kent_b_d)); digits = 3),
+ draws_falling_after_2022 = count(falls, vcat(kent_hard_d, kent_b_d)))
+```
+
+    (rmse_hard_best_fit = 0.144, rmse_broken_refit = 0.15, rmse_hard_phi20 = (0.144, 0.149), rmse_broken_phi20 = (0.149, 0.16), draws_falling_after_2022 = 0)
+
+Every draw of either cap rises through 2024, while the survey falls
+after 2022, so the cap’s shape doesn’t explain Kent’s fall.
+
 ## What changes the result
 
 Pulling these together, for the central vaccine and tolerant planting,
@@ -1576,7 +1753,9 @@ rows_m = [("Regeneration and tree death", extrema(gg(ρ, μ, CENTRAL_V) for (ρ,
           ("Recovery (C_pers 0.98–1)", extrema(rg("C=$C", CENTRAL_V) for C in (1.0, 0.98)), extrema(rg("C=$C", PLANT) for C in (1.0, 0.98))),
           ("Shape of the cap (soft or broken)", extrema(vcat([cg("n=$n", CENTRAL_V) for n in GB_NS], [bkg("b=$b", CENTRAL_V) for b in GB_BS])),
            extrema(vcat([cg("n=$n", PLANT) for n in GB_NS], [bkg("b=$b", PLANT) for b in GB_BS]))),
-          ("French parameters, φ = 20", interval(over(pl75.gain, "phi20", 15, CENTRAL_V)), interval(over(pl75.gain, "phi20", 15, PLANT)))]
+          ("French parameters, φ = 20", interval(over(pl75.gain, "phi20", 15, CENTRAL_V)), interval(over(pl75.gain, "phi20", 15, PLANT))),
+          ("French parameters, broken cap, φ = 20", interval(over_b(bl75.gain, "phi20", 15, CENTRAL_V)),
+           interval(over_b(bl75.gain, "phi20", 15, PLANT)))]
 fig_m = plot(; yticks = (1:length(rows_m), reverse(first.(rows_m))), xlims = (0, 0.42), xlabel = "Gain in healthy adults in 2075 (share of today's ash)",
              legend = :outertop, legendcolumns = 2, size = (950, 520), left_margin = 4Plots.mm, bottom_margin = 4Plots.mm, grid = :x)
 for (i, r) in enumerate(reverse(rows_m))
@@ -1586,7 +1765,7 @@ end
 fig_m
 ```
 
-![](06_interventions_gb_files/figure-commonmark/cell-52-output-1.svg)
+![](06_interventions_gb_files/figure-commonmark/cell-58-output-1.svg)
 
 ``` julia
 md_table(["Unknown", "Central vaccine", "Tolerant planting (s 0.2)"], [[r[1], txt(r[2]), txt(r[3])] for r in rows_m])
@@ -1604,6 +1783,7 @@ md_table(["Unknown", "Central vaccine", "Tolerant planting (s 0.2)"], [[r[1], tx
 | Recovery (C_pers 0.98–1) | 0.083–0.091 | 0.328–0.346 |
 | Shape of the cap (soft or broken) | 0.077–0.089 | 0.278–0.329 |
 | French parameters, φ = 20 | 0.076–0.089 | 0.317–0.339 |
+| French parameters, broken cap, φ = 20 | 0.081–0.092 | 0.308–0.318 |
 
 Quality of the product, in the section above, moves them as far again,
 and it is set by the input chosen. Regeneration and tree death, the
@@ -1645,7 +1825,11 @@ the margin.
   that keeps rising above S (990 at b = 0.3). A soft cap raises the
   baseline in 2075 from 0.06 to 0.10 and trims the main gains, for
   example s 0.2 planting from 0.33 to 0.29. Under the broken power law,
-  clearing 95 % of litter falls to 0.31, level with that planting.
+  clearing 95 % of litter falls to 0.31, level with that planting. Over
+  the French posterior under that cap, allowing for φ = 20, vaccine and
+  planting gains stay within 0.05 of the hard cap’s, and clearing 95 %
+  beats s 0.2 planting in 38 % of draws at B = 15, against 83 % under
+  the hard cap.
 - **Felling and clearing part of the litter do little for healthy
   trees.** Felling half of symptomatic adults a year gains 0.03 healthy
   adults and changes all adults by -0.16. Clearing 50 % of litter gains
@@ -1697,13 +1881,14 @@ These are ordered by how much they could change the ranking above.
   km square in the sweeps. The two-scale test of a single stand ignores
   the stand’s own host, and its share of its own spores rests on kernels
   measured elsewhere.
-- **The cap’s shape is open.** The sweeps use the paper’s hard cap,
+- **The cap’s shape is open.** Most sweeps use the paper’s hard cap,
   which France fits worse than a soft cap or a broken power law, and it
-  can’t choose between those two. The ranking mostly holds across the
-  shapes tried, but 95 % litter clearing falls to the level of s 0.2
-  planting under the best broken power law, a perfect vaccine passes
-  very tolerant planting at b = 0.5, and felling and partial clearing
-  gain more under a soft cap, while staying small.
+  can’t choose between those two. Only the French posterior is rerun
+  under a broken power law, at b = 0.3 held fixed. The ranking mostly
+  holds across the shapes tried, but 95 % litter clearing falls to the
+  level of s 0.2 planting under the best broken power law, a perfect
+  vaccine passes very tolerant planting at b = 0.5, and felling and
+  partial clearing gain more under a soft cap, while staying small.
 - **No costs.** Areas treated are not costs, and a hectare planted
   differs from a hectare vaccinated. Felling’s reasons of safety and
   amenity are outside the measure.
