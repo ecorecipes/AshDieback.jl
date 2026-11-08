@@ -13,6 +13,12 @@ Settings of the model that are not estimated (PEOC's `parameters_of_the_model.py
 - `cap_symptom_probability`: cap the yearly probability of developing symptoms at 1, as in
   eq. (6) of the paper. PEOC does not, which gives a `NaN` likelihood when it exceeds 1;
   `false` reproduces PEOC.
+- `saturation_sharpness`: the sharpness n of the cap on the diffused spore load w; see
+  [`saturate`](@ref). `Inf`, the default, is the paper's hard cap min(w, S).
+- `heat_recovery`, `heat_recovery_lag`: recovery that rises with summer heat; see
+  [`persistence`](@ref). `heat_recovery = 0`, the default, is the paper's constant C_pers.
+  The lag is 1 for the summer before the year scored (the summer that drives its new
+  symptoms) or 0 for the same summer.
 """
 Base.@kwdef struct ModelSettings
     initialization_year::Int = 2007
@@ -21,6 +27,47 @@ Base.@kwdef struct ModelSettings
     delta_t::Float64 = 0.1
     diffusion_period::Float64 = 60.0
     cap_symptom_probability::Bool = false
+    saturation_sharpness::Float64 = Inf
+    heat_recovery::Float64 = 0.0
+    heat_recovery_lag::Int = 1
+    function ModelSettings(initialization_year, final_year, observed_trees, delta_t, diffusion_period,
+                           cap_symptom_probability, saturation_sharpness, heat_recovery,
+                           heat_recovery_lag)
+        saturation_sharpness > 0 ||
+            throw(ArgumentError("saturation_sharpness must be positive, got $saturation_sharpness"))
+        0 <= heat_recovery <= 1 ||
+            throw(ArgumentError("heat_recovery must be in [0, 1], got $heat_recovery"))
+        heat_recovery_lag in (0, 1) ||
+            throw(ArgumentError("heat_recovery_lag must be 0 or 1, got $heat_recovery_lag"))
+        return new(initialization_year, final_year, observed_trees, delta_t, diffusion_period,
+                   cap_symptom_probability, saturation_sharpness, heat_recovery, heat_recovery_lag)
+    end
+end
+
+"""
+    persistence(C_pers, T, gamma, h)
+
+The yearly chance that a tree with symptoms keeps them, C_pers (1 − h min(T/γ, 1)), at the
+temperature index `T` of a summer. With h = 0 it is the constant C_pers of the paper. With h > 0,
+heat adds recovery: as T rises to γ, the index at which no new symptoms develop
+([`temperature_effect`](@ref) is 0), the share recovering rises to 1 − C_pers (1 − h). Negative
+fill values of `T` count as 0.
+"""
+persistence(C::Real, T::Real, gamma::Real, h::Real) = h == 0 ? C : C * (1 - h * clamp(T / gamma, 0, 1))
+
+"""
+    saturate(w, S, n = Inf)
+
+The colonised rachis per ash F from a diffused spore load `w` and the saturation `S`:
+min(w, S) for `n = Inf`, as in the paper, and w / (1 + (w/S)ⁿ)^(1/n) for finite `n`. The soft
+form rises from F ≈ w at low loads to S at high ones, and is S/2^(1/n) at w = S; n = 1 is
+Michaelis–Menten, and larger n tend to the hard cap. It is evaluated on each side of S so that
+large ratios don't overflow.
+"""
+function saturate(w::Real, S::Real, n::Real = Inf)
+    isinf(n) && return min(w, S)
+    x = w / S
+    return x <= 1 ? w / (1 + abs(x)^n)^(1 / n) : S / (1 + x^(-n))^(1 / n)
 end
 
 """
@@ -178,7 +225,8 @@ end
 
 Simulate the model: impute the first two years, then for each later year produce spores
 from the rachis of the two previous years (with the Allee effect and rainfall), diffuse
-them with `alg` (an [`AbstractDiffusionAlgorithm`](@ref)) and saturate them at `S_sat`;
+them with `alg` (an [`AbstractDiffusionAlgorithm`](@ref)) and saturate them at `S_sat` (see
+[`saturate`](@ref));
 finally compute the probability of symptoms for each survey year.
 """
 function CommonSolve.solve(prob::AshDiebackProblem,
@@ -201,7 +249,7 @@ function CommonSolve.solve(prob::AshDiebackProblem,
             spores .*= θ.beta_0
         end
         w = diffuse(op, vec(spores), prob.scheme)
-        F[:, :, a] .= min.(reshape(w, nx, ny), θ.S_sat)
+        F[:, :, a] .= saturate.(reshape(w, nx, ny), θ.S_sat, s.saturation_sharpness)
     end
     return AshDiebackSolution(F, symptom_probability(prob, F), prob, alg)
 end
@@ -211,7 +259,8 @@ end
 
 The probability q_a that a tree has symptoms in each survey year, from the colonised rachis
 per ash `fungi` of the year before: q̃_a = F_{a−1} f(T_{a−1}) / r_S of developing them, and
-q_a = q̃_a (1 − C_pers q_{a−1}) + C_pers q_{a−1} with q = 0 before the first survey year.
+q_a = q̃_a (1 − C_pers q_{a−1}) + C_pers q_{a−1} with q = 0 before the first survey year
+(C_pers from [`persistence`](@ref) when the settings' `heat_recovery` is not 0).
 """
 function symptom_probability(prob::AshDiebackProblem, F::AbstractArray{<:Real,3})
     θ, d, s = prob.p, prob.data, prob.settings
@@ -225,7 +274,13 @@ function symptom_probability(prob::AshDiebackProblem, F::AbstractArray{<:Real,3}
         T = view(d.temperature, :, :, t0 + l - 1)
         qt = view(F, :, :, l) .* temperature_effect.(T, θ.gamma, θ.kappa) ./ θ.r_symp
         s.cap_symptom_probability && (qt .= min.(qt, 1))
-        q = qt .* (1 .- C .* q) .+ C .* q
+        if s.heat_recovery == 0
+            q = qt .* (1 .- C .* q) .+ C .* q
+        else
+            Tr = view(d.temperature, :, :, t0 + l - s.heat_recovery_lag)
+            Ce = persistence.(C, Tr, θ.gamma, s.heat_recovery)
+            q = qt .* (1 .- Ce .* q) .+ Ce .* q
+        end
         Q[:, :, l] .= q
     end
     return Q

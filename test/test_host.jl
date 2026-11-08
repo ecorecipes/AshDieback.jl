@@ -3,7 +3,7 @@ using AshDieback: temperature_effect
 const THETA_HOST = [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]
 
 # A uniform grid: diffusion leaves a uniform field alone, so one quadrat can be followed by hand.
-function uniform_problem(; d = 0.5, psi = 1.0, T = 5.0, θ = THETA_HOST, last_year = 2030)
+function uniform_problem(; d = 0.5, psi = 1.0, T = 5.0, θ = THETA_HOST, last_year = 2030, n = Inf)
     grid = QuadratGrid(; quadrat_length = 10.0, nx_mainland = 4, ny_mainland = 4,
                        border = (0, 0, 0, 0))
     nx, ny = size(grid)
@@ -12,16 +12,18 @@ function uniform_problem(; d = 0.5, psi = 1.0, T = 5.0, θ = THETA_HOST, last_ye
                     :T28, fill(float(d), nx, ny), (fill(float(psi), nx, ny), fill(2.0 * psi, nx, ny)),
                     [YearObservations(a, Int[], Int[], Float64[], Int[], Int[], Int[], Float64[])
                      for a in 2000:last_year])
-    settings = ModelSettings(; initialization_year = 2001, final_year = last_year, delta_t = 1.0)
+    settings = ModelSettings(; initialization_year = 2001, final_year = last_year, delta_t = 1.0,
+                             saturation_sharpness = n)
     return AshDiebackProblem(data, θ; settings)
 end
 
 @testset "host dynamics" begin
     @testset "the constant host reproduces the paper's model" begin
-        for C in (1.0, 0.9)
+        for (C, h, lag) in ((1.0, 0.0, 1), (0.9, 0.0, 1), (1.0, 0.6, 1), (0.9, 0.8, 0))
             θ = copy(THETA_HOST)
             θ[8] = C
-            prob = AshDiebackProblem(DATA, θ; settings = ModelSettings(; delta_t = 1.0, final_year = 2015))
+            settings = ModelSettings(; delta_t = 1.0, final_year = 2015, heat_recovery = h, heat_recovery_lag = lag)
+            prob = AshDiebackProblem(DATA, θ; settings)
             ref = solve(prob)
             sol = solve(HostProblem(prob, constant_host()))
             @test maximum(abs.(sol.fungi .- ref.fungi) ./ max.(abs.(ref.fungi), 1e-300)) < 1e-11
@@ -83,6 +85,20 @@ end
         for l in 3:8
             expected = prob.p.beta_0 * (sol.fungi[2, 2, l - 2] * A(l - 2) + sol.fungi[2, 2, l - 1] * A(l - 1))
             @test sol.fungi[2, 2, l] ≈ min(expected, prob.p.S_sat) rtol = 1e-10
+        end
+    end
+
+    @testset "the spore load before a soft cap" begin
+        for n in (Inf, 1.0, 4.0)
+            prob = uniform_problem(; psi = 0.01, n)
+            sol = solve(HostProblem(prob, HostDynamics([HostClass(:ash; mortality = 0.5)])))
+            A(l) = sol.healthy[2, 2, 1, l] + sol.symptomatic[2, 2, 1, l]
+            @test all(isnan, sol.spore_load[:, :, 1:2])
+            for l in 3:8
+                expected = prob.p.beta_0 * (sol.fungi[2, 2, l - 2] * A(l - 2) + sol.fungi[2, 2, l - 1] * A(l - 1))
+                @test sol.spore_load[2, 2, l] ≈ expected rtol = 1e-10
+                @test sol.fungi[2, 2, l] == saturate(sol.spore_load[2, 2, l], prob.p.S_sat, n)
+            end
         end
     end
 

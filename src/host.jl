@@ -55,7 +55,8 @@ each quadrat is divided into `classes` ([`HostClass`](@ref)), each with adults a
 healthy or with symptoms. Each year, in this order:
 
 1. Symptoms: with q̃ = F f(T)/r_S as in the paper, a tree at risk develops them with chance
-   min(1, s q̃). Trees at risk are the healthy ones and the share 1 − C_pers that recover.
+   min(1, s q̃). Trees at risk are the healthy ones and the share 1 − C_pers that recover
+   (C_pers from [`persistence`](@ref) when the settings' `heat_recovery` is not 0).
 2. Death: trees with symptoms die of the disease with chance μ, multiplied by
    `juvenile_mortality_factor` for juveniles and capped at 1, then all trees die with chance
    `background_mortality`.
@@ -264,6 +265,8 @@ The result of `solve(::HostProblem)`.
 Fields, with the host in the units of `ash_density` and years given by [`host_years`](@ref):
 - `fungi`: colonised rachis per ash F, size `(nx, ny, years - 1)`, for the
   [`simulated_years`](@ref). F of year a drives the symptoms of year a + 1.
+- `spore_load`: the diffused spore load w before the cap, F = [`saturate`](@ref)(w, S), of the
+  same size; `NaN` in the two imputed years. w / S is how far a quadrat is above the cap.
 - `healthy`, `symptomatic`: adults, size `(nx, ny, classes, years)`.
 - `juvenile_healthy`, `juvenile_symptomatic`: juveniles, of the same size.
 - `disease_deaths`: cumulative area killed by the disease, size `(nx, ny, years)`.
@@ -273,6 +276,7 @@ Fields, with the host in the units of `ash_density` and years given by [`host_ye
 """
 struct HostSolution{P<:HostProblem,A<:AbstractDiffusionAlgorithm}
     fungi::Array{Float64,3}
+    spore_load::Array{Float64,3}
     healthy::Array{Float64,4}
     symptomatic::Array{Float64,4}
     juvenile_healthy::Array{Float64,4}
@@ -433,6 +437,7 @@ function CommonSolve.solve(hp::HostProblem, alg::AbstractDiffusionAlgorithm = Sp
 
     F = zeros(nx, ny, n)
     F[:, :, 1], F[:, :, 2] = initial_fungi(prob)
+    W = fill(NaN, nx, ny, n)
     H, Y = zeros(nx, ny, nk, n + 1), zeros(nx, ny, nk, n + 1)
     JH, JY = zeros(nx, ny, nk, n + 1), zeros(nx, ny, nk, n + 1)
     dead = zeros(nx, ny, n + 1)
@@ -481,13 +486,15 @@ function CommonSolve.solve(hp::HostProblem, alg::AbstractDiffusionAlgorithm = Sp
                 spores .*= θ.beta_0
             end
             w = diffuse(op, vec(spores), prob.scheme)
-            F[:, :, l] .= min.(reshape(w, nx, ny), θ.S_sat)
+            W[:, :, l] .= reshape(w, nx, ny)
+            F[:, :, l] .= saturate.(view(W, :, :, l), θ.S_sat, s.saturation_sharpness)
         end
         dead[:, :, l + 1] .= view(dead, :, :, l)
         for j in 1:ny, i in 1:nx
             K[i, j] > 0 || continue
             qt = F[i, j, l] * temperature_effect(d.temperature[i, j, t0 + l - 1], θ.gamma, θ.kappa) /
                  θ.r_symp
+            Ce = persistence(C, d.temperature[i, j, t0 + l - s.heat_recovery_lag], θ.gamma, s.heat_recovery)
             A = N = 0.0
             for k in 1:nk
                 adults = H[i, j, k, l] + Y[i, j, k, l]
@@ -499,11 +506,11 @@ function CommonSolve.solve(hp::HostProblem, alg::AbstractDiffusionAlgorithm = Sp
                 p = min(1.0, c.susceptibility * qt)
                 μj = min(1.0, c.mortality * host.juvenile_mortality_factor)
                 # Symptoms, as q = q̃ (1 − C q) + C q of the paper
-                risk = H[i, j, k, l] + (1 - C) * Y[i, j, k, l]
-                ya = C * Y[i, j, k, l] + p * risk
+                risk = H[i, j, k, l] + (1 - Ce) * Y[i, j, k, l]
+                ya = Ce * Y[i, j, k, l] + p * risk
                 ha = (1 - p) * risk
-                risk = JH[i, j, k, l] + (1 - C) * JY[i, j, k, l]
-                yj = C * JY[i, j, k, l] + p * risk
+                risk = JH[i, j, k, l] + (1 - Ce) * JY[i, j, k, l]
+                yj = Ce * JY[i, j, k, l] + p * risk
                 hj = (1 - p) * risk
                 # Death
                 dead[i, j, l + 1] += c.mortality * ya + μj * yj
@@ -530,5 +537,5 @@ function CommonSolve.solve(hp::HostProblem, alg::AbstractDiffusionAlgorithm = Sp
         end
         close_year!(l + 1)
     end
-    return HostSolution(F, H, Y, JH, JY, dead, applied, hp, alg)
+    return HostSolution(F, W, H, Y, JH, JY, dead, applied, hp, alg)
 end

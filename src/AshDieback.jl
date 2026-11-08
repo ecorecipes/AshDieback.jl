@@ -45,7 +45,7 @@ export AbstractDiffusionAlgorithm, SparseCrankNicolson, DenseCrankNicolson,
        neumann_laplacian
 
 include("problem.jl")
-export ModelSettings, AshDiebackProblem, AshDiebackSolution, BinomialTerms,
+export ModelSettings, saturate, persistence, AshDiebackProblem, AshDiebackSolution, BinomialTerms,
        simulated_years, survey_years, initial_fungi, symptom_probability, solve, remake
 
 include("likelihood.jl")

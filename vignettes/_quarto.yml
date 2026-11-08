@@ -9,8 +9,9 @@ engine: julia
 
 julia:
   project: "."
-  # several threads, so AMIS evaluates its batches in parallel as users would run it
-  exeflags: ["--threads=auto"]
+  # several threads, so AMIS evaluates its batches in parallel as users would run it; one GC thread,
+  # since Julia 1.12's parallel GC with CHOLMOD corrupted the heap in long threaded runs
+  exeflags: ["--threads=auto", "--gcthreads=1"]
 
 format:
   html:

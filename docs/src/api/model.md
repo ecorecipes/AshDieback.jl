@@ -10,6 +10,8 @@ CurrentModule = AshDieback
 AshDiebackParameters
 parameter_names
 ModelSettings
+saturate
+persistence
 simulated_years
 survey_years
 temperature_effect

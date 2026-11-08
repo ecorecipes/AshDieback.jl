@@ -15,6 +15,9 @@ Simon Frost
   - [Against Kent’s survey](#against-kents-survey)
 - [The margin over the spore cap](#the-margin-over-the-spore-cap)
 - [Recovery](#recovery)
+  - [Recovery after hot summers](#recovery-after-hot-summers)
+- [A softer cap](#a-softer-cap)
+- [Clearing litter in one stand](#clearing-litter-in-one-stand)
 - [Warming](#warming)
 - [The French parameters](#the-french-parameters)
 - [What changes the result](#what-changes-the-result)
@@ -35,9 +38,10 @@ good the product is, when it can start and at what rate, and how far
 ahead you look.** Long-term regeneration and the share of trees already
 symptomatic can also change the order, and so can the little recovery of
 symptomatic trees that the French data allow. The fitted disease
-parameters and warming to 2075 change vaccine and planting results far
-less. The numbers are in the [summary](#summary) at the end, with the
-field data that would help most.
+parameters, the shape of the spore cap and warming to 2075 change
+vaccine and planting results far less. The numbers are in the
+[summary](#summary) at the end, with the field data that would help
+most.
 
 **This is a comparison under assumptions, not a forecast.** No ash
 vaccine exists, so vaccination is a generic strategy whose efficacy,
@@ -62,6 +66,7 @@ using DataFrames
 using LinearAlgebra
 using Plots
 using Printf
+using Random
 using Statistics
 
 BLAS.set_num_threads(1)  # the threads go to the runs of a sweep
@@ -240,7 +245,7 @@ function outcome_rows(sol, years, B)
 end
 
 function run_case(c)
-    settings = ModelSettings(; initialization_year = c.init, final_year = maximum(c.years), delta_t = 1.0)
+    settings = ModelSettings(; initialization_year = c.init, final_year = maximum(c.years), delta_t = 1.0, saturation_sharpness = c.n)
     sc = SCENARIOS[c.scenario]
     prob = AshDiebackProblem(c.data, c.θ; settings)
     return outcome_rows(solve(HostProblem(prob, host_for(c.ρ, c.μ, sc); interventions = sc.ivs)), c.years, c.B)
@@ -249,8 +254,8 @@ end
 const THETA = [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.05, 0.056]
 const DATA15 = prob0.data
 const DEFAULT_YEARS = (2026, 2050, 2075)
-case(labels, scenario; data = DATA15, B = 15.0, θ = THETA, ρ = 0.03, μ = 0.04, years = DEFAULT_YEARS, init = 2014) =
-    (; labels, scenario, data, B, θ, ρ, μ, years, init)
+case(labels, scenario; data = DATA15, B = 15.0, θ = THETA, ρ = 0.03, μ = 0.04, years = DEFAULT_YEARS, init = 2014, n = Inf) =
+    (; labels, scenario, data, B, θ, ρ, μ, years, init, n)
 
 "Run the cases not yet in results/name.csv, then return the rows of all the cases."
 function sweep(name, cases)
@@ -600,8 +605,10 @@ kent_years = 2017:2024
 @assert kent_mean.year == collect(kent_years)
 survey_mean = kent_mean.mean_share
 
-function kent_model(rs; theta = theta_rate(rs))
+function kent_model(rs; theta = theta_rate(rs), h = 0.0, lag = 1)
     prob, _ = gb_problem(inputs; B = 15.0, theta, final_year = 2030)
+    h == 0 || (prob = AshDiebackProblem(prob.data, theta; settings = ModelSettings(; initialization_year = 2014, final_year = 2030,
+                                                                                    delta_t = 1.0, heat_recovery = h, heat_recovery_lag = lag)))
     sol = solve(HostProblem(prob, host_for(0.03, 0.04, SCENARIOS["baseline"])))
     ys = host_years(sol)
     cells = [cell(r.easting_km, r.northing_km) for r in eachrow(kent)]
@@ -791,8 +798,9 @@ levels off below 1, at about q̃ / (1 − C_pers + C_pers q̃) for a yearly
 chance q̃ of new symptoms. Kent’s fall after 2022 could be recovery. The
 French data can test it. Here C_pers is fixed and β₀, D, S, C_init and κ
 are refitted to France by Nelder–Mead, as for the margin above. The
-refits run one after another, since threaded refits have crashed with
-heap corruption (cause not found), so recomputing them takes some hours:
+refits run one after another, since threaded refits crashed with heap
+corruption under Julia 1.12’s parallel garbage collector, so recomputing
+them takes some hours:
 
 ``` julia
 const CS = (1.0, 0.99, 0.985, 0.98, 0.97, 0.95, 0.9, 0.8, 0.7, 0.5)
@@ -943,6 +951,355 @@ falls only from 0.144 to 0.116. A steady rate of recovery can’t make the
 share fall while spores stay at the cap, so Kent’s fall needs something
 that changes over time, such as felling, a change of observers, or
 recovery that varies from year to year.
+
+### Recovery after hot summers
+
+Hot summers are the obvious source of recovery that varies from year to
+year. Kent’s summers had T28, the days over 28 °C, well above the others
+in 2018 and 2022 (mean over its squares):
+
+``` julia
+kent_cells = [cell(r.easting_km, r.northing_km) for r in eachrow(kent)]
+kent_T = [round(mean(DATA15.temperature[i, j, y - first(DATA15.climate_years) + 1] for (i, j) in kent_cells); digits = 1)
+          for y in 2016:2024]
+(; years = 2016:2024, T28 = kent_T, f_T = round.(temperature_effect.(kent_T, 21.50001, 0.056); digits = 2))
+```
+
+    (years = 2016:2024, T28 = [4.0, 1.1, 12.2, 6.5, 8.6, 2.7, 11.5, 0.9, 3.8], f_T = [0.99, 1.0, 0.95, 0.98, 0.97, 0.99, 0.96, 1.0, 0.99])
+
+The temperature function f(T) hardly moves at these values, so recovery
+here rises with T itself: a share 1 − C_pers (1 − h min(T/γ, 1)) of
+symptomatic trees recovers each year (`persistence`), with T of the
+summer before the survey, which also sets new symptoms (lag 1), or of
+the survey’s own summer (lag 0). With C_pers = 1, h is the share
+recovering in a summer at γ = 21.5 days. As for C_pers, β₀, D, S, C_init
+and κ are refitted to France at each h, one refit after another:
+
+``` julia
+"Refit β₀, D, S, C_init and κ to France under `settings`, with C_pers = 1; return them, the loss and the dispersion."
+function refit_france(settings)
+    base = load_peoc_data()
+    ref = loglikelihood(AshDiebackProblem(base, [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056]))
+    nll(x) = begin  # x = log(β₀, D, S, C_init, κ)
+        v = loglikelihood(AshDiebackProblem(base, θ_rec(x, 1.0); settings))
+        isfinite(v) ? -v : 1e12
+    end
+    starts = [log.([23.26 * fb, 18.51, 92.0 * fs, 0.00855, 0.056]) for fb in (1.0, 1.5, 2.5) for fs in (1.0, 1.5, 2.5, 4.0)]
+    x0 = starts[argmin(nll.(starts))]
+    x, _ = nelder_mead(nll, x0; maxeval = 400)
+    x, _ = nelder_mead(nll, x; step = 0.05, maxeval = 250)
+    x, v = nelder_mead(nll, x; step = 0.01, maxeval = 150)
+    return (exp.(x)..., v + ref, dispersion(solve(AshDiebackProblem(base, θ_rec(x, 1.0); settings)))...)
+end
+
+"Refit at each key not yet in results/name.csv, one after another, and return all the rows."
+function refits_for(name, columns, keys, settings_of)
+    path = joinpath(RESULTS, name * ".csv")
+    isfile(path) || write(path, join(vcat(columns, ["beta_0", "D", "S", "C_init", "kappa", "loss", "pearson", "deviance", "cells"]), ",") * "\n")
+    done = Set(Tuple(r[c] for c in columns) for r in eachrow(CSV.read(path, DataFrame)))
+    for k in keys
+        k in done && continue
+        open(io -> write(io, join((k..., refit_france(settings_of(k...))...), ",") * "\n"), path, "a")
+    end
+    return CSV.read(path, DataFrame)
+end
+
+const HS = (0.01, 0.03, 0.1, 0.3, 1.0)
+heat = refits_for("heat_refits", ["h", "lag"], [(h, lag) for h in HS for lag in (1, 0)],
+                  (h, lag) -> ModelSettings(; heat_recovery = h, heat_recovery_lag = lag))
+heat_row(h, lag) = heat[findfirst(r -> r.h == h && r.lag == lag, eachrow(heat)), :]
+# The 95 % limit on h for each lag: where the loss over φ crosses 1.92, interpolating between refits
+h_limit(lag) = let r = sort(filter(:lag => ==(lag), heat), :h), i = findfirst(>(1.92 * PHI_REC), r.loss)
+    r.h[i - 1] + (1.92 * PHI_REC - r.loss[i - 1]) / (r.loss[i] - r.loss[i - 1]) * (r.h[i] - r.h[i - 1])
+end
+nothing
+```
+
+``` julia
+md_table(["h", "Heat of", "β₀", "D", "S", "κ", "Log-likelihood lost", "Lost / φ", "Pearson / df"],
+         [[r.h, r.lag == 1 ? "summer before" : "same summer",
+           (r.loss > 1e11 ? ("–", "–", "–", "–", "zero likelihood", "–", "–") :
+            (fmt(r.beta_0, 1), fmt(r.D, 1), fmt(r.S, 0), fmt(r.kappa), fmt(r.loss, 1), fmt(r.loss / PHI_REC, 1), fmt(r.pearson, 1)))...]
+          for r in eachrow(heat)])
+```
+
+| h    | Heat of       | β₀   | D    | S   | κ     | Log-likelihood lost | Lost / φ | Pearson / df |
+|------|---------------|------|------|-----|-------|---------------------|----------|--------------|
+| 0.01 | summer before | 23.3 | 18.5 | 93  | 0.054 | 2.9                 | 0.1      | 20.2         |
+| 0.01 | same summer   | 23.3 | 18.5 | 93  | 0.054 | 1.9                 | 0.1      | 20.2         |
+| 0.03 | summer before | 23.4 | 18.5 | 94  | 0.051 | 17.1                | 0.9      | 20.1         |
+| 0.03 | same summer   | 23.4 | 18.5 | 94  | 0.052 | 15.0                | 0.8      | 20.1         |
+| 0.1  | summer before | 17.2 | 21.6 | 105 | 0.035 | 118.8               | 5.9      | 19.5         |
+| 0.1  | same summer   | 17.1 | 21.6 | 105 | 0.037 | 121.1               | 6.1      | 19.5         |
+| 0.3  | summer before | 15.5 | 22.9 | 122 | 0.007 | 681.6               | 34.1     | 19.5         |
+| 0.3  | same summer   | 15.4 | 23.0 | 123 | 0.016 | 731.9               | 36.6     | 19.6         |
+| 1.0  | summer before | –    | –    | –   | –     | zero likelihood     | –        | –            |
+| 1.0  | same summer   | –    | –    | –   | –     | zero likelihood     | –        | –            |
+
+**France allows only a little recovery after hot summers:** the 95 %
+limit is h ≈ 0.045 whichever summer counts, so at most about 5 % of
+symptomatic trees recovering in a summer as hot as γ. In Kent’s hottest
+summer, that is at most 2.6 %. On Kent’s tetrads, with each refit’s
+parameters, including those France rejects, and h = 0.6 at the French
+best fit as a stronger test:
+
+``` julia
+θ_fit(r) = [1000.0, 0.0, r.beta_0, 0.0, r.D, r.S, 21.50001, 1.0, 0.05, r.kappa]  # a refit to France, with C_init = 0.05 on GB
+kent_heat = Dict((h, lag) => kent_model(1.0; theta = θ_fit(heat_row(h, lag)), h, lag)[2]
+                 for h in (0.03, 0.1, 0.3) for lag in (1, 0))
+for lag in (1, 0)
+    kent_heat[(0.6, lag)] = kent_model(1.0; h = 0.6, lag)[2]
+end
+fig_heat = plot(kent_years, survey_mean; label = "survey, mean of tetrads", marker = :circle, color = :black, xlabel = "Year",
+                ylabel = "share with symptoms, with the model's dead", legend = :bottomright, ylims = (0, 1))
+plot!(fig_heat, kent_years, central_dead; label = "model, no recovery", color = BLUE, linewidth = 5)
+for (h, col) in zip((0.03, 0.1, 0.3), (AQUA, ORANGE, VIOLET))
+    plot!(fig_heat, kent_years, kent_heat[(h, 1)]; label = "model, h = $h, refitted", color = col, linewidth = 2)
+end
+plot!(fig_heat, kent_years, kent_heat[(0.6, 1)]; label = "model, h = 0.6, best fit", color = VIOLET, linestyle = :dash, linewidth = 2)
+fig_heat
+```
+
+![](06_interventions_gb_files/figure-commonmark/cell-32-output-1.svg)
+
+``` julia
+heat_rmse(h, lag) = rms(kent_heat[(h, lag)])
+md_table(["Error over 2019–2024", "No recovery", "h = 0.03", "h = 0.1", "h = 0.3", "h = 0.6 (best fit)"],
+         [[lag == 1 ? "Heat of the summer before" : "Heat of the same summer", fmt(rms(central_dead)),
+           (fmt(heat_rmse(h, lag)) for h in (0.03, 0.1, 0.3, 0.6))...] for lag in (1, 0)])
+```
+
+| Error over 2019–2024 | No recovery | h = 0.03 | h = 0.1 | h = 0.3 | h = 0.6 (best fit) |
+|----|----|----|----|----|----|
+| Heat of the summer before | 0.144 | 0.142 | 0.139 | 0.130 | 0.184 |
+| Heat of the same summer | 0.144 | 0.143 | 0.142 | 0.136 | 0.185 |
+
+**Recovery after hot summers doesn’t give Kent’s fall either.** Within
+what France allows, the curve barely moves. At h = 0.3, which France
+rejects, it flattens after the hot summer of 2022 and the error falls
+only to 0.130. At h = 0.6 it dips in 2023 but sits well below the survey
+before, and the error rises to 0.184. In every case the model’s share is
+higher in 2024 than in 2022, while the survey falls from 0.50 to 0.34,
+so the fall more likely lies in felling, the survey or something the
+model leaves out.
+
+## A softer cap
+
+Every run so far caps the spore load at S: F = min(w, S). The sharp
+corner is an assumption of the paper, and much of what follows depends
+on it, since the protection of neighbours and the effect of litter
+clearing come from the margin over the cap. `saturation_sharpness = n`
+replaces it with F = w/(1 + (w/S)ⁿ)^(1/n), which is the hard cap as n →
+∞ and Michaelis–Menten, wS/(w + S), at n = 1. As n → 0, F tends to a
+multiple of √(wS), a response with no cap at all. At each n, β₀, D, S,
+C_init and κ are refitted to France as above:
+
+``` julia
+const NS = (16.0, 8.0, 4.0, 2.0, 1.0, 0.75, 0.5, 0.25)
+soft = sort(refits_for("softcap_refits", ["n"], [(n,) for n in NS], n -> ModelSettings(; saturation_sharpness = n)), :n; rev = true)
+soft_row(n) = soft[findfirst(==(n), soft.n), :]
+θ_soft(n) = isinf(n) ? THETA : θ_fit(soft_row(n))
+nothing
+```
+
+``` julia
+md_table(["n", "β₀", "D", "S", "κ", "Log-likelihood gained", "Gained / φ", "Pearson / df"],
+         [[r.n, fmt(r.beta_0, 1), fmt(r.D, 1), fmt(r.S, 0), fmt(r.kappa), fmt(-r.loss, 1), fmt(-r.loss / PHI_REC, 1), fmt(r.pearson, 1)]
+          for r in eachrow(soft)])
+```
+
+| n    | β₀    | D    | S   | κ     | Log-likelihood gained | Gained / φ | Pearson / df |
+|------|-------|------|-----|-------|-----------------------|------------|--------------|
+| 16.0 | 22.9  | 18.7 | 92  | 0.056 | 3.6                   | 0.2        | 20.3         |
+| 8.0  | 22.7  | 18.8 | 93  | 0.055 | 17.0                  | 0.8        | 20.3         |
+| 4.0  | 21.9  | 19.3 | 94  | 0.053 | 63.3                  | 3.2        | 20.4         |
+| 2.0  | 19.8  | 21.3 | 99  | 0.050 | 202.0                 | 10.1       | 20.6         |
+| 1.0  | 21.2  | 22.7 | 118 | 0.039 | 534.0                 | 26.7       | 20.8         |
+| 0.75 | 25.9  | 21.6 | 136 | 0.032 | 700.7                 | 35.0       | 20.8         |
+| 0.5  | 42.1  | 19.2 | 185 | 0.024 | 894.3                 | 44.7       | 21.1         |
+| 0.25 | 195.0 | 15.1 | 538 | 0.018 | 964.5                 | 48.2       | 21.9         |
+
+**France prefers a softer cap, and the softer the better.** The fit
+improves steadily as n falls, by 534 at n = 1 and 964 at n = 0.25, far
+past the cut-off of 1.92 φ ≈ 38 even allowing for overdispersion. As n
+falls, β₀ and S grow together and κ falls, so the data lean towards a
+concave response like √w rather than a cap. The softer cap doesn’t
+reduce the overdispersion. The refits are not checked for convergence,
+so a gain may be understated. On Great Britain, at B = 15:
+
+``` julia
+const GB_NS = (Inf, 8.0, 2.0, 1.0, 0.5, 0.25)
+soft_names = ["baseline", "baseline s 0.05", CENTRAL_V, PERFECT_V, PLANT, PLANT_T, "fell 50 %", "clear 50 % of litter", "clear 95 % of litter"]
+soft_runs = sweep("softcap", [case((; cap = "n=$n"), name; θ = θ_soft(n), n) for n in GB_NS for name in soft_names])
+cg, cv = lookups(soft_runs).gain, lookups(soft_runs).value
+nrow(soft_runs)
+```
+
+    162
+
+``` julia
+md_table(["Healthy adults, 2075", ("n = $(isinf(n) ? "∞ (hard cap)" : n)" for n in GB_NS)...],
+         vcat([["Baseline", (fmt(cv("n=$n", "baseline")) for n in GB_NS)...]],
+              [[name, (fmt(cg("n=$n", name)) for n in GB_NS)...] for name in soft_names[3:end]]))
+```
+
+| Healthy adults, 2075 | n = ∞ (hard cap) | n = 8.0 | n = 2.0 | n = 1.0 | n = 0.5 | n = 0.25 |
+|----|----|----|----|----|----|----|
+| Baseline | 0.062 | 0.062 | 0.069 | 0.082 | 0.091 | 0.100 |
+| central vaccine from 2027 | 0.083 | 0.082 | 0.078 | 0.077 | 0.078 | 0.080 |
+| perfect vaccine from 2027 | 0.448 | 0.447 | 0.434 | 0.420 | 0.414 | 0.411 |
+| plant s 0.2, 2.0 %/y from 2027 | 0.328 | 0.327 | 0.316 | 0.303 | 0.298 | 0.294 |
+| plant s 0.05, 2.0 %/y from 2027 | 0.477 | 0.477 | 0.470 | 0.458 | 0.450 | 0.442 |
+| fell 50 % | 0.041 | 0.047 | 0.074 | 0.076 | 0.059 | 0.052 |
+| clear 50 % of litter | 0.015 | 0.017 | 0.037 | 0.058 | 0.062 | 0.064 |
+| clear 95 % of litter | 0.400 | 0.399 | 0.394 | 0.384 | 0.375 | 0.355 |
+
+**The ranking holds at every n.** A softer cap lets more trees stay
+healthy without intervention, and so trims the gains of vaccines,
+planting and 95 % litter clearing by a few points. Felling and partial
+litter clearing gain more, because below the cap every spore removed
+counts, but they peak at 0.076 and 0.064, still far below the rest.
+
+## Clearing litter in one stand
+
+Spores mix across each 10 km square in the model, so clearing litter
+acts only when the whole square clears it. A stand clearing its own
+litter keeps the spores that would have landed on it from its own trees,
+but not those from the rest of the square. This tests that with two
+scales. A stand clears a share e of its own litter from 2027, and a
+share s of the spores landing in it come from its own litter, the rest
+from the square’s load w before the cap. So the stand’s load in year a
+is
+
+`w_stand = w × ((1 − s) + s × (c F_stand(a − 2) + c F_stand(a − 1)) / (F(a − 2) + F(a − 1)))`,
+
+with c = 1 − e once clearing starts, and F_stand = `saturate`(w_stand,
+S, n). The stand’s own source follows its own F, as the square’s follows
+its rachis of the two years before. The measure is the chance that a
+tree healthy in 2027 stays free of symptoms to 2050, ash-weighted over
+squares, on the central baseline. The square’s host stands in for the
+stand’s, so the stand’s own extra survival is left out, which
+understates the gain a little. Under the hard cap the stand gains only
+if s e exceeds 1 − S/w, and the load is far above the cap:
+
+``` julia
+stand_settings(n) = ModelSettings(; initialization_year = 2014, final_year = 2075, delta_t = 1.0, saturation_sharpness = n)
+stand_sol = Dict(n => solve(HostProblem(AshDiebackProblem(DATA15, θ_soft(n); settings = stand_settings(n)),
+                                        host_for(0.03, 0.04, SCENARIOS["baseline"]))) for n in (Inf, 1.0))
+"Ash-weighted quantile x of w/S over the squares in year y."
+function load_quantile(sol, y, x)
+    l = findfirst(==(y), simulated_years(sol.prob.prob.settings))
+    r = sol.spore_load[:, :, l][ASH] ./ sol.prob.prob.p.S_sat
+    o = sortperm(r)
+    return r[o][findfirst(>=(x), cumsum(K[ASH][o] ./ sum(K[ASH])))]
+end
+(; median_w_over_S = [y => round(load_quantile(stand_sol[Inf], y, 0.5); digits = 1) for y in (2026, 2050, 2074)],
+ lowest_tenth_w_over_S = [y => round(load_quantile(stand_sol[Inf], y, 0.1); digits = 1) for y in (2026, 2050, 2074)])
+```
+
+    (median_w_over_S = [2026 => 9.2, 2050 => 5.0, 2074 => 3.0], lowest_tenth_w_over_S = [2026 => 3.8, 2050 => 2.1, 2074 => 1.2])
+
+``` julia
+"Ash-weighted chance that a tree healthy in `start` stays free of symptoms to `to`, in its square and in a stand of self-share `s` clearing `e`."
+function stand_free(sol, s, e; start = START, to = 2050)
+    prob = sol.prob.prob
+    d, p, n = prob.data, prob.p, prob.settings.saturation_sharpness
+    sim = simulated_years(prob.settings)
+    t0 = first(sim) - first(d.climate_years) + 1
+    W, F = sol.spore_load, sol.fungi
+    c(l) = sim[l] >= start ? 1 - e : 1.0
+    # symptoms of year a + 1 come from F and T of year a
+    free(Fs, i, j) = prod(1 - min(Fs[l] * temperature_effect(d.temperature[i, j, t0 + l - 1], p.gamma, p.kappa) / p.r_symp, 1.0)
+                          for l in eachindex(sim) if start <= sim[l] < to)
+    total = sum(K[ASH])
+    square = stand = 0.0
+    for I in findall(ASH)
+        i, j = Tuple(I)
+        Fs = F[i, j, :]
+        for l in 3:length(sim)
+            sim[l] > start || continue
+            den = F[i, j, l - 2] + F[i, j, l - 1]
+            own = den > 0 ? (c(l - 2) * Fs[l - 2] + c(l - 1) * Fs[l - 1]) / den : 1.0
+            Fs[l] = saturate(W[i, j, l] * ((1 - s) + s * own), p.S_sat, n)
+        end
+        square += K[I] / total * free(view(F, i, j, :), i, j)
+        stand += K[I] / total * free(Fs, i, j)
+    end
+    return square, stand
+end
+const SELF = (0.0, 0.2, 0.5, 0.8, 0.95, 0.99)
+stand_out = Dict((n, s, e) => stand_free(stand_sol[n], s, e)[2] for n in (Inf, 1.0) for s in SELF for e in (0.5, 0.95))
+nothing
+```
+
+``` julia
+md_table(["Share of the stand's spores from its own litter", "Hard cap, clear 50 %", "Hard cap, clear 95 %",
+          "Soft cap n = 1, clear 50 %", "Soft cap n = 1, clear 95 %"],
+         [[s == 0 ? "0 (as the square)" : s, (fmt(stand_out[(n, s, e)]) for n in (Inf, 1.0) for e in (0.5, 0.95))...] for s in SELF])
+```
+
+| Share of the stand’s spores from its own litter | Hard cap, clear 50 % | Hard cap, clear 95 % | Soft cap n = 1, clear 50 % | Soft cap n = 1, clear 95 % |
+|----|----|----|----|----|
+| 0 (as the square) | 0.121 | 0.121 | 0.127 | 0.127 |
+| 0.2 | 0.121 | 0.122 | 0.133 | 0.139 |
+| 0.5 | 0.123 | 0.126 | 0.146 | 0.172 |
+| 0.8 | 0.128 | 0.153 | 0.171 | 0.270 |
+| 0.95 | 0.133 | 0.341 | 0.198 | 0.484 |
+| 0.99 | 0.135 | 0.621 | 0.211 | 0.681 |
+
+How large is s? For a round stand inside uniform ash, it is the share of
+a stand’s spores that land in it. For the 2Dt kernel (Clark et
+al. 1999), P(distance \> r) = (1 + r²/u)^−(p−1), with mean dispersal
+distances of 0.2 to 2.6 km, the range reported by Grosdidier et
+al. (2018), by simulation:
+
+``` julia
+# The mean distance of the 2Dt kernel is √u √π Γ(p − 3/2) / (2 Γ(p − 1)); the ratio of Γs for each p:
+const GAMMA_RATIO = Dict(1.75 => 2.9586751191886385, 2.0 => sqrt(π), 3.0 => sqrt(π) / 2)
+kernel_u(m, p) = (m / (sqrt(π) * GAMMA_RATIO[p] / 2))^2
+"Share of the spores of a round stand of `ha` hectares that land in it, for the 2Dt kernel of mean `m` km and tail `p`."
+function self_share(ha, m, p; draws = 400_000, rng = Xoshiro(1))
+    R, u = sqrt(ha / 100 / π), kernel_u(m, p)
+    hit = 0
+    for _ in 1:draws
+        ρ, a = R * sqrt(rand(rng)), 2π * rand(rng)
+        r, b = sqrt(u * (rand(rng)^(-1 / (p - 1)) - 1)), 2π * rand(rng)
+        hit += (ρ * cos(a) + r * cos(b))^2 + (ρ * sin(a) + r * sin(b))^2 <= R^2
+    end
+    return hit / draws
+end
+const STAND_HA = (10, 100, 1000)
+kernels = [(p, m) for p in (1.75, 2.0, 3.0) for m in (0.2, 0.5, 1.4, 2.6)]
+shares = Dict((p, m, ha) => self_share(ha, m, p) for (p, m) in kernels for ha in STAND_HA)
+md_table(["Tail p", "Mean distance, km", ("s, $ha ha" for ha in STAND_HA)...],
+         [[p, m, (fmt(shares[(p, m, ha)], 2) for ha in STAND_HA)...] for (p, m) in kernels])
+share_range(ha) = extrema(shares[(p, m, ha)] for (p, m) in kernels)
+```
+
+| Tail p | Mean distance, km | s, 10 ha | s, 100 ha | s, 1000 ha |
+|--------|-------------------|----------|-----------|------------|
+| 1.75   | 0.2               | 0.58     | 0.83      | 0.94       |
+| 1.75   | 0.5               | 0.29     | 0.64      | 0.86       |
+| 1.75   | 1.4               | 0.07     | 0.33      | 0.67       |
+| 1.75   | 2.6               | 0.02     | 0.16      | 0.50       |
+| 2.0    | 0.2               | 0.50     | 0.80      | 0.93       |
+| 2.0    | 0.5               | 0.20     | 0.57      | 0.84       |
+| 2.0    | 1.4               | 0.04     | 0.23      | 0.61       |
+| 2.0    | 2.6               | 0.01     | 0.10      | 0.41       |
+| 3.0    | 0.2               | 0.42     | 0.78      | 0.93       |
+| 3.0    | 0.5               | 0.13     | 0.51      | 0.82       |
+| 3.0    | 1.4               | 0.02     | 0.16      | 0.55       |
+| 3.0    | 2.6               | 0.01     | 0.05      | 0.32       |
+
+    share_range (generic function with 1 method)
+
+**Clearing one stand’s litter protects it only if the stand is large and
+the kernel short.** A 10 ha stand keeps 0.01 to 0.58 of its spores, and
+100 ha 0.05 to 0.83. Under the hard cap, even clearing 95 % at s = 0.5
+raises the chance of staying healthy to 2050 from 0.121 to only 0.126.
+Under the softer cap that France prefers, the stand gains more, to 0.172
+at s = 0.5 and 0.270 at s = 0.8. So the 10 km model’s lack of a stand
+scale costs little under the hard cap, but some under a softer one.
 
 ## Warming
 
@@ -1126,6 +1483,7 @@ rows_m = [("Regeneration and tree death", extrema(gg(ρ, μ, CENTRAL_V) for (ρ,
           ("Margin over the cap (k 1–5)", extrema(mg("k=$k", CENTRAL_V) for k in KS), extrema(mg("k=$k", PLANT) for k in KS)),
           ("Warming to 2075", extrema(wg(s, m, CENTRAL_V) for (s, m) in climates), extrema(wg(s, m, PLANT) for (s, m) in climates)),
           ("Recovery (C_pers 0.98–1)", extrema(rg("C=$C", CENTRAL_V) for C in (1.0, 0.98)), extrema(rg("C=$C", PLANT) for C in (1.0, 0.98))),
+          ("Shape of the cap (n 0.25–∞)", extrema(cg("n=$n", CENTRAL_V) for n in GB_NS), extrema(cg("n=$n", PLANT) for n in GB_NS)),
           ("French parameters, φ = 20", interval(over(pl75.gain, "phi20", 15, CENTRAL_V)), interval(over(pl75.gain, "phi20", 15, PLANT)))]
 fig_m = plot(; yticks = (1:length(rows_m), reverse(first.(rows_m))), xlims = (0, 0.42), xlabel = "Gain in healthy adults in 2075 (share of today's ash)",
              legend = :outertop, legendcolumns = 2, size = (950, 520), left_margin = 4Plots.mm, bottom_margin = 4Plots.mm, grid = :x)
@@ -1136,7 +1494,7 @@ end
 fig_m
 ```
 
-![](06_interventions_gb_files/figure-commonmark/cell-35-output-1.svg)
+![](06_interventions_gb_files/figure-commonmark/cell-48-output-1.svg)
 
 ``` julia
 md_table(["Unknown", "Central vaccine", "Tolerant planting (s 0.2)"], [[r[1], txt(r[2]), txt(r[3])] for r in rows_m])
@@ -1152,6 +1510,7 @@ md_table(["Unknown", "Central vaccine", "Tolerant planting (s 0.2)"], [[r[1], tx
 | Margin over the cap (k 1–5) | 0.072–0.083     | 0.283–0.331               |
 | Warming to 2075             | 0.083–0.092     | 0.328–0.357               |
 | Recovery (C_pers 0.98–1)    | 0.083–0.091     | 0.328–0.346               |
+| Shape of the cap (n 0.25–∞) | 0.077–0.083     | 0.294–0.328               |
 | French parameters, φ = 20   | 0.076–0.089     | 0.317–0.339               |
 
 Quality of the product, in the section above, moves them as far again,
@@ -1185,14 +1544,23 @@ the margin.
   vaccine and litter clearing.** At most about 2 % of symptomatic trees
   can recover each year. At that rate, a perfect vaccine (0.52) and
   clearing 95 % of litter (0.49) pass very tolerant planting (0.46) at B
-  = 15. Recovery doesn’t explain Kent’s fall.
+  = 15. Recovery doesn’t explain Kent’s fall, whether steady or after
+  hot summers, of which France allows at most about 5 % in a summer at
+  γ.
+- **France prefers a softer spore cap than the paper’s, but the ranking
+  holds.** The fit improves steadily as the cap softens, by 964 in
+  log-likelihood at n = 0.25. That raises the baseline in 2075 from 0.06
+  to 0.10 and trims the main gains, for example s 0.2 planting from 0.33
+  to 0.29.
 - **Felling and clearing part of the litter do little for healthy
   trees.** Felling half of symptomatic adults a year gains 0.03 healthy
   adults and changes all adults by -0.16. Clearing 50 % of litter gains
   0.01. At the best-fit parameters, clearing 95 % ends the epidemic in
   the model, but it means treating about 160000 ha a year, and its
   effect is the most uncertain here (0.14 to 0.41 over B and the French
-  parameters).
+  parameters). A single stand clearing 95 % of its own litter gains
+  little under the hard cap, unless most of its spores are its own, as
+  only large stands under short kernels manage.
 
 ### What field data would help most
 
@@ -1206,18 +1574,20 @@ These are ordered by how much they could change the ranking above.
     and saplings in affected stands would address it.
 3.  **Repeated surveys of symptoms and deaths with a fixed protocol,
     including recovery.** Kent’s fall after 2022 could be felling, a
-    change of observers or recovery. A steady rate of recovery doesn’t
-    produce it in the model, and France allows little, but even 2 % a
-    year changes the order at the top, so tracking the same trees would
-    settle it.
+    change of observers or recovery. Neither a steady rate of recovery
+    nor recovery after hot summers produces it in the model, and France
+    allows little, but even 2 % a year changes the order at the top, so
+    tracking the same trees would settle it.
 4.  **For a vaccine: efficacy, duration and how fast it could reach
     trees.** All are assumed here, and they matter more than the
     coverage cap.
 5.  **Ash basal area including trees outside woodland.** This matters
     for felling and partial litter clearing only.
-6.  **A test below the spore cap.** The French data say little about how
-    the disease behaves when inoculum falls below the cap, which is
-    where litter clearing works or fails.
+6.  **A test below the spore cap.** The French data prefer a softer cap
+    than the paper’s, but they can’t pin down its shape, and the shape
+    decides how much partial litter clearing and felling do. Symptoms
+    against measured spore load, in stands cleared or not, would settle
+    it.
 
 ### Limits
 
@@ -1227,10 +1597,16 @@ These are ordered by how much they could change the ranking above.
   traits, the native tolerant share and regeneration. These are sweeps,
   not estimates.
 - **Recovery is at a steady rate, and only up to what France allows**
-  (about 2 % a year), except as a test. There is no stand scale. Spores
-  mix across each 10 km square, so a stand protected by clearing its own
-  litter can’t appear here, and such benefits may be larger than this
-  suggests.
+  (about 2 % a year), except as a test. Recovery after hot summers is
+  tested on France and Kent only, not on the interventions.
+- **The stand scale is a side calculation.** Spores mix across each 10
+  km square in the sweeps. The two-scale test of a single stand ignores
+  the stand’s own host, and its share of its own spores rests on kernels
+  measured elsewhere.
+- **The cap’s shape is open.** The sweeps use the paper’s hard cap,
+  which France fits worse than softer ones. The ranking holds across the
+  shapes tried, but felling and partial litter clearing gain more under
+  a soft cap, while staying small.
 - **No costs.** Areas treated are not costs, and a hectare planted
   differs from a hectare vaccinated. Felling’s reasons of safety and
   amenity are outside the measure.

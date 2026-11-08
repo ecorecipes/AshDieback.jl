@@ -58,4 +58,57 @@
                                                                        cap_symptom_probability = true))
         @test maximum(solve(capped).symptoms) <= 1
     end
+
+    @testset "soft spore cap" begin
+        S = 92.0
+        ws = [0.0, 1e-120, 1.0, 50.0, 92.0, 200.0, 1e4, 1e300]
+        @test saturate.(ws, S) == min.(ws, S)
+        @test saturate.(ws, S, Inf) == min.(ws, S)
+        @test saturate(S, S, 1.0) ≈ S / 2
+        @test saturate(S, S, 4.0) ≈ S / 2^(1 / 4)
+        @test saturate(10.0, S, 1.0) ≈ 10.0 * S / (S + 10.0)
+        for n in (0.5, 1.0, 4.0, 50.0)
+            F = saturate.(ws, S, n)
+            @test all(isfinite, F) && issorted(F) && all(F .<= min.(ws, S))
+            @test F[2] ≈ 1e-120 rtol = 1e-12   # a load far below the cap is untouched
+            @test F[end] ≈ S
+        end
+        @test saturate(200.0, S, 1e6) ≈ S rtol = 1e-6
+        @test saturate(50.0, S, 1e6) ≈ 50.0 rtol = 1e-6
+        @test_throws ArgumentError ModelSettings(; saturation_sharpness = 0.0)
+        # Sharp enough, the soft cap gives the paper's likelihood; softer, it changes it.
+        prob = AshDiebackProblem(DATA, [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056])
+        sharp = remake(prob; settings = ModelSettings(; saturation_sharpness = 1e6))
+        soft = remake(prob; settings = ModelSettings(; saturation_sharpness = 2.0))
+        ll = loglikelihood(prob)
+        @test loglikelihood(sharp) ≈ ll rtol = 1e-6
+        @test abs(loglikelihood(soft) - ll) > 1
+    end
+
+    @testset "recovery with summer heat" begin
+        @test persistence(0.95, 30.0, 21.5, 0.0) === 0.95
+        @test persistence(0.95, 0.0, 21.5, 0.7) == 0.95
+        @test persistence(0.95, -1.0, 21.5, 0.7) == 0.95   # fill value
+        @test persistence(1.0, 10.75, 21.5, 0.6) ≈ 0.7
+        @test persistence(0.9, 40.0, 21.5, 1.0) == 0.0
+        @test_throws ArgumentError ModelSettings(; heat_recovery = 1.5)
+        @test_throws ArgumentError ModelSettings(; heat_recovery_lag = 2)
+        prob = AshDiebackProblem(DATA, [1000.0, 0.0, 23.26, 0.0, 18.51, 92.0, 21.50001, 1.0, 0.00855, 0.056])
+        base = solve(prob).symptoms
+        # by hand: q_a = q̃ (1 − C q) + C q with C from the same summer's index (lag 0)
+        lag0 = solve(remake(prob; settings = ModelSettings(; heat_recovery = 0.5, heat_recovery_lag = 0)))
+        sol = solve(prob)
+        t0 = 2007 - first(DATA.climate_years) + 1
+        i, j = findmax(DATA.temperature[:, :, t0 + 3] .* (base[:, :, 2] .> 0.01))[2].I
+        @test DATA.temperature[i, j, t0 + 3] > 0
+        q = 0.0
+        for l in 1:3
+            qt = sol.fungi[i, j, l] * temperature_effect(DATA.temperature[i, j, t0 + l - 1], 21.50001, 0.056) / 1000
+            Ce = 1 - 0.5 * clamp(DATA.temperature[i, j, t0 + l] / 21.50001, 0, 1)
+            q = qt * (1 - Ce * q) + Ce * q
+        end
+        @test lag0.symptoms[i, j, 3] ≈ q rtol = 1e-12
+        @test all(lag0.symptoms .<= base .+ 1e-15)
+        @test lag0.symptoms[i, j, 3] < base[i, j, 3]
+    end
 end
