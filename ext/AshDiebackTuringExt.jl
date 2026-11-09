@@ -9,7 +9,7 @@ using Turing: Turing, @model, Uniform, product_distribution
 end
 
 function AshDieback.turing_model(post::AshDiebackPosterior)
-    return ashdieback_turing(post, post.ranges[post.free, 1], post.ranges[post.free, 2])
+    return ashdieback_turing(post, AshDieback.parameter_bounds(post)...)
 end
 
 end

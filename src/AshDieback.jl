@@ -53,7 +53,7 @@ export loglikelihood, peoc_loglikelihood
 
 include("posterior.jl")
 export AshDiebackPosterior, peoc_prior_ranges, reduced_model_prior_ranges,
-       free_parameters, full_parameters, logprior
+       free_parameters, full_parameters, logprior, posterior_problem, parameter_bounds
 
 include("mcmc.jl")
 export ComponentwiseGammaMH, GammaMHTransition, GammaMHState, peoc_mh_shapes

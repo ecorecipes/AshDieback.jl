@@ -52,6 +52,9 @@ chain = sample(post, ComponentwiseGammaMH(post), 1_000;
 | 2 | [Inference](vignettes/02_inference/02_inference.md) | The posterior, Metropolis–Hastings, AMIS and Turing |
 | 3 | [Validation and the likelihood surface](vignettes/03_validation/03_validation.md) | Table 4, forecasts for 2020–2023, and the likelihood on a grid |
 | 4 | [Fast AMIS](vignettes/04_fast_amis/04_fast_amis.md) | AMIS in minutes with a coarser time step, and how to check the approximation |
+| 5 | [Reproducing the paper](vignettes/05_reproducing_the_paper/05_reproducing_the_paper.md) | The paper's AMIS results, the Appendix A.1 chains, and draws allowing for overdispersion |
+| 6 | [Interventions in Great Britain](vignettes/06_interventions_gb/06_interventions_gb.md) | Vaccines, tolerant planting, felling and litter clearing, with a changing host |
+| 7 | [Checking the Great Britain model](vignettes/07_model_checks_gb/07_model_checks_gb.md) | Kent's survey, recovery, the shape of the spore cap and the cap's exponent free |
 
 ## Installation
 

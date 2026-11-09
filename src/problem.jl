@@ -193,16 +193,29 @@ end
 """
     remake(prob::AshDiebackProblem; p = prob.p, settings = prob.settings)
 
-A copy of `prob` with parameters `p` and `settings`. With the same settings, the data and
-precomputed constants are shared. Changing `final_year` extends the simulation beyond the
-fitted period, as in the paper's validation on 2020–2023:
-`remake(prob; settings = ModelSettings(; final_year = 2023))`.
+A copy of `prob` with parameters `p` and `settings`. The data and precomputed constants are
+shared unless `settings` changes the years, `observed_trees`, `delta_t` or
+`diffusion_period`, so changing only the spore response (such as `cap_exponent`) is cheap.
+Changing `final_year` extends the simulation beyond the fitted period, as in the paper's
+validation on 2020–2023: `remake(prob; settings = ModelSettings(; final_year = 2023))`.
 """
 function SciMLBase.remake(prob::AshDiebackProblem; p = prob.p, settings = prob.settings)
-    settings === prob.settings || settings == prob.settings ||
-        return AshDiebackProblem(prob.data, p; settings)
-    return AshDiebackProblem(prob.data, AshDiebackParameters(p), prob.settings, prob.scheme,
+    shares_precomputation(settings, prob.settings) || return AshDiebackProblem(prob.data, p; settings)
+    return AshDiebackProblem(prob.data, AshDiebackParameters(p), settings, prob.scheme,
                              prob.laplacian, prob.binomial, prob.survey)
+end
+
+# The settings that the scheme, the binomial terms and the survey are built from.
+function shares_precomputation(a::ModelSettings, b::ModelSettings)
+    return a === b ||
+           (a.initialization_year == b.initialization_year && a.final_year == b.final_year &&
+            a.observed_trees == b.observed_trees && a.delta_t == b.delta_t &&
+            a.diffusion_period == b.diffusion_period)
+end
+
+# `s` with a different cap exponent.
+function with_cap_exponent(s::ModelSettings, b::Real)
+    return ModelSettings(; (k => getfield(s, k) for k in fieldnames(ModelSettings))..., cap_exponent = b)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", prob::AshDiebackProblem)

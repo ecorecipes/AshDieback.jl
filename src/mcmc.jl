@@ -21,7 +21,8 @@ at once with `blocked = true`), and accepts it with the Metropolis–Hastings pr
 which corrects for the asymmetric proposal. A parameter at exactly 0 cannot move.
 
 `shape` gives sⱼ for each free parameter; the second form takes the shapes of the free
-parameters of `post` from a 10-vector. `sample` needs `initial_params`.
+parameters of `post` from a 10-vector, with an 11th entry (default 200) for a free cap
+exponent. `sample` needs `initial_params`.
 """
 struct ComponentwiseGammaMH <: AbstractMCMC.AbstractSampler
     shape::Vector{Float64}
@@ -35,9 +36,12 @@ end
 
 function ComponentwiseGammaMH(post::AshDiebackPosterior; shape = peoc_mh_shapes(),
                               blocked::Bool = false)
-    length(shape) == 10 ||
-        throw(ArgumentError("shape must have one entry per parameter (10)"))
-    return ComponentwiseGammaMH(shape[post.free]; blocked)
+    n = 10 + free_cap_exponent(post)
+    length(shape) in (10, n) ||
+        throw(ArgumentError("shape must have one entry per parameter ($n)"))
+    s = shape[post.free]
+    free_cap_exponent(post) && push!(s, length(shape) == 11 ? shape[11] : 200.0)
+    return ComponentwiseGammaMH(s; blocked)
 end
 
 """

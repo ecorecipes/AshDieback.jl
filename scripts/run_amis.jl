@@ -3,14 +3,16 @@
 # checkpoint after every iteration, and resumes from one if it exists.
 #
 #   julia --project --threads=8 --gcthreads=1 scripts/run_amis.jl [folder] [iterations] [samples] [seed] [delta_t]
-#       [cap_exponent] [beta_0 D S_sat C_init kappa]
+#       [cap_exponent | free] [beta_0 D S_sat C_init kappa]
 #
 # delta_t defaults to the paper's 0.1. A coarser step is an approximation: delta_t = 1 is 10 times
 # faster, with log-likelihood errors of about 0.04 (sd) between draws near the posterior.
 # cap_exponent (default 0, the paper's hard cap) is the broken power law above the spore cap,
 # `ModelSettings(; cap_exponent)`, held fixed. The five values after it centre the first proposal;
 # they default to the paper's region, which is far from the posterior when cap_exponent > 0, so pass
-# a fit at that exponent (vignette 6's `broken_refits.csv`).
+# a fit at that exponent (vignette 6's `broken_refits.csv`). `free` in place of a number gives the
+# exponent a uniform prior on [0, 1] as a sixth free parameter, whose first proposal is centred on 0.3
+# with variance 0.01.
 # Default folder: runs/amis_T28 (git-ignored). Writes checkpoint.jls, which holds the
 # AMISResult and the RNG state, and log.csv, one row per iteration. The deviation columns are
 # eq. (18) of the paper for each parameter, with cells of a fifth of Table 2's standard
@@ -28,7 +30,8 @@ iterations = parse(Int, get(ARGS, 2, "60"))
 samples = parse(Int, get(ARGS, 3, "10000"))
 seed = parse(Int, get(ARGS, 4, "1"))
 delta_t = parse(Float64, get(ARGS, 5, "0.1"))
-cap_exponent = parse(Float64, get(ARGS, 6, "0.0"))
+free_b = get(ARGS, 6, "0.0") == "free"
+cap_exponent = free_b ? 0.0 : parse(Float64, get(ARGS, 6, "0.0"))
 length(ARGS) in (0:6..., 11) || error("give all five start values (beta_0 D S_sat C_init kappa) or none")
 start = length(ARGS) == 11 ? parse.(Float64, ARGS[7:11]) : [24.0, 18.0, 90.0, 0.0085, 0.05]
 mkpath(folder)
@@ -40,11 +43,11 @@ logfile = joinpath(folder, "log.csv")
                           C_init = start[4], kappa = start[5])
 post = AshDiebackPosterior(AshDiebackProblem(load_peoc_data(), θ0;
                                              settings = ModelSettings(; delta_t, cap_exponent)),
-                           reduced_model_prior_ranges())
+                           reduced_model_prior_ranges(); cap_exponent = free_b ? (0.0, 1.0) : nothing)
 names = free_parameters(post)
-@assert names == [:beta_0, :D, :S_sat, :C_init, :kappa]
-m1 = collect(θ0)[post.free]
-Σ1 = [3.0, 0.4, 1.0, 1e-8, 1.5e-5]  # Table 2, as variances
+@assert names == [:beta_0, :D, :S_sat, :C_init, :kappa, (free_b ? (:cap_exponent,) : ())...]
+m1 = [collect(θ0)[post.free]; (free_b ? [0.3] : Float64[])]
+Σ1 = [3.0, 0.4, 1.0, 1e-8, 1.5e-5, (free_b ? [0.01] : Float64[])...]  # Table 2, as variances
 widths = sqrt.(Σ1) ./ 5
 
 function marginals(res)
@@ -101,6 +104,6 @@ function record(r, k)
 end
 
 println(now(), " ", Threads.nthreads(), " threads; ", remaining, " iterations of ", samples,
-        "; cap_exponent ", cap_exponent)
+        "; cap_exponent ", free_b ? "free" : cap_exponent)
 flush(stdout)
 amis(rng, post, res; iterations = remaining, samples, threaded = true, callback = record)

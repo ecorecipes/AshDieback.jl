@@ -12,6 +12,8 @@ peoc_prior_ranges
 reduced_model_prior_ranges
 free_parameters
 full_parameters
+posterior_problem
+parameter_bounds
 logprior
 ```
 

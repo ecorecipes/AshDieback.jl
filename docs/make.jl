@@ -15,7 +15,8 @@ makedocs(;
                                   "Validation and the likelihood surface" => "tutorials/03_validation.md",
                                   "Fast AMIS" => "tutorials/04_fast_amis.md",
                                   "Reproducing the paper" => "tutorials/05_reproducing_the_paper.md",
-                                  "Interventions in Great Britain" => "tutorials/06_interventions_gb.md"],
+                                  "Interventions in Great Britain" => "tutorials/06_interventions_gb.md",
+                                  "Checking the Great Britain model" => "tutorials/07_model_checks_gb.md"],
                   "API Reference" => ["Data" => "api/data.md",
                                       "Model" => "api/model.md",
                                       "Inference" => "api/inference.md"]])

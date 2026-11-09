@@ -34,7 +34,11 @@ package was built from).
 - `src/parameters.jl`, `src/problem.jl`: parameters, settings, `AshDiebackProblem`, `solve`.
 - `src/diffusion.jl`: Laplacian and the Crank–Nicolson algorithms (`SparseCrankNicolson`
   through LinearSolve.jl; `DenseCrankNicolson`, PEOC's reference, for tests).
-- `src/likelihood.jl`, `src/posterior.jl`: likelihoods; the LogDensityProblems posterior.
+- `src/likelihood.jl`, `src/posterior.jl`: likelihoods; the LogDensityProblems posterior. A free cap exponent is
+  not a model parameter but a setting, so evaluate a posterior point with `posterior_problem(post, x)` or
+  `loglikelihood(post, x)`, not `remake(post.problem; p = full_parameters(post, x))`. `remake` shares the
+  precomputed scheme, Laplacian and binomial terms unless the years, `observed_trees`, `delta_t` or
+  `diffusion_period` change.
 - `src/mcmc.jl`, `src/amis.jl`: PEOC's samplers (AbstractMCMC sampler; AMIS).
 - `src/validation.jl`: the RMSE of Table 4 and the likelihood on a regular grid.
 - `src/host.jl`: `HostProblem`, the same spore model with a changing host (classes, juveniles, death, recruitment) and interventions (`Vaccinate`, `PlantStock`, `Fell`, `ReduceLitter`). `constant_host()` must keep reproducing `solve(prob)`.
@@ -61,6 +65,8 @@ or kill it (`quarto call engine julia status` is read-only). Quarto waits only a
 for a new server to start, so on a loaded machine the first render fails with "No
 transport file was found"; render again once `status` shows the server running.
 Vignette 5 reads two results too slow to run live from `results/` (`scripts/export_vignette_results.jl`, `peoc_py3/scripts/export_a1_chains.py`) and writes `posterior_draws.csv`, which vignette 6 reads. Vignette 6's sweeps cache to `results/*.csv` and resume: delete a file to recompute it. The cached `posterior` rows are keyed on each draw's β₀, so new draws recompute by themselves. Rendering it from empty takes hours. Its French refits (`recovery_refits.csv` at fixed C_pers, `heat_refits.csv` at fixed heat recovery h and lag, `softcap_refits.csv` at fixed cap sharpness n, `power_refits.csv` and `broken_refits.csv` at fixed exponents of the pure and broken power laws) run serially in the vignette, because threaded refits crashed with heap corruption; the cached rows were made by the same code run as one single-threaded process per value. The vignettes run with `--gcthreads=1` (`vignettes/_quarto.yml`).
+Vignette 7 runs vignette 6's chunks labelled `#| label: shared-*` from 6's source and shares its `results/`, so
+relabelling or renaming in those chunks changes vignette 7 too; render 6 before 7.
 The crash needs Julia 1.12's parallel GC together with CHOLMOD: threaded refits crashed within about 10
 minutes on 1.12.7, but ran 30 minutes clean with `--gcthreads=1` (compute threads kept), with UMFPACK,
 and on Julia 1.11. So run long threaded jobs with `--gcthreads=1`.
@@ -81,8 +87,9 @@ threads) into the git-ignored `runs/`, with a checkpoint after every iteration, 
 it. `scripts/summarise_amis.jl` compares a run with the paper. `run_amis.jl`'s fifth argument sets
 `delta_t` for a fast run (15 iterations of 1000 at Δt = 1 takes minutes; see vignette 4), and
 `scripts/compare_amis.jl` compares one with a reference run. Its sixth argument is the broken cap's
-`cap_exponent` (held fixed), and the five after that centre the first proposal (β₀ D S C_init κ),
-which a nonzero exponent needs, as its posterior is far from the paper's. `scripts/check_amis_weights.jl` shows how much a run's largest weights matter: one draw took the reference run's ESS from 252 781 to 26 457, so ESS alone does not measure precision here. Do not change `AMISResult` while a
+`cap_exponent`, held fixed, or `free` for a sixth free parameter (`AshDiebackPosterior(...; cap_exponent = (0, 1))`),
+and the five after that centre the first proposal (β₀ D S C_init κ), which a nonzero exponent needs, as its
+posterior is far from the paper's. `scripts/check_amis_weights.jl` shows how much a run's largest weights matter: one draw took the reference run's ESS from 252 781 to 26 457, so ESS alone does not measure precision here. Do not change `AMISResult` while a
 run depends on its checkpoint: it is a `Serialization` file.
 
 ## Files not to edit by hand
