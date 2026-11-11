@@ -1,10 +1,11 @@
 # Compare a fast AMIS run (coarser delta_t, fewer draws) with a reference run from
 # scripts/run_amis.jl, and check the fast draws against the likelihood at delta_t = 0.1.
 #
-#   julia --project --threads=4 scripts/compare_amis.jl fast_folder reference_folder [delta_t] [n]
+#   julia --project --threads=4 scripts/compare_amis.jl fast_folder reference_folder [delta_t] [n] [cap_exponent]
 #
 # `n` fast draws (default 400) are resampled by weight and their likelihood recomputed at
-# delta_t = 0.1. If the fast run is sound, the correction weights are nearly equal.
+# delta_t = 0.1. If the fast run is sound, the correction weights are nearly equal. Pass the
+# runs' fixed `cap_exponent` (default 0, the paper's hard cap) so the likelihoods match them.
 using AshDieback
 using LinearAlgebra: BLAS, Symmetric
 using Printf: @printf
@@ -17,11 +18,13 @@ fast, _ = deserialize(joinpath(ARGS[1], "checkpoint.jls"))
 ref, _ = deserialize(joinpath(ARGS[2], "checkpoint.jls"))
 delta_t = parse(Float64, get(ARGS, 3, "1.0"))
 n = parse(Int, get(ARGS, 4, "400"))
+cap_exponent = parse(Float64, get(ARGS, 5, "0.0"))
 
 θ0 = [1000.0, 0.0, 24.0, 0.0, 18.0, 90.0, 21.50001, 1.0, 0.0085, 0.05]
 data = load_peoc_data()
-exact = AshDiebackPosterior(AshDiebackProblem(data, θ0), reduced_model_prior_ranges())
-coarse = AshDiebackPosterior(AshDiebackProblem(data, θ0; settings = ModelSettings(; delta_t)),
+exact = AshDiebackPosterior(AshDiebackProblem(data, θ0; settings = ModelSettings(; cap_exponent)),
+                            reduced_model_prior_ranges())
+coarse = AshDiebackPosterior(AshDiebackProblem(data, θ0; settings = ModelSettings(; delta_t, cap_exponent)),
                              reduced_model_prior_ranges())
 names = free_parameters(exact)
 
@@ -77,4 +80,7 @@ c = exp.(d .- maximum(d))
         extrema(d)...)
 @printf("  efficiency of the correction weights: %.4f\n", sum(c)^2 / (n * sum(abs2, c)))
 xb = best_sample(fast)[1]
-@printf("  best fast draw at delta_t = 0.1: %.3f (θmax -24717.215)\n", loglikelihood(exact, xb))
+@printf("  best fast draw at delta_t = 0.1: %.3f%s\n", loglikelihood(exact, xb),
+        cap_exponent == 0 ? " (θmax -24717.215)" : "")
+xr = best_sample(ref)[1]
+@printf("  best reference draw: %.3f\n", loglikelihood(exact, xr))
